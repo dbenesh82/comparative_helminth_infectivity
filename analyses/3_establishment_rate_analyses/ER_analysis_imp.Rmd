@@ -1,6 +1,9 @@
 ---
 title: "Establishment probability in worms"
-output: html_document
+output: 
+  github_document:
+    toc: true
+    df_print: kable
 ---
 
 Parasitic worms often have complex life cycles, where they infect multiple hosts in succession before reproducing. Each step in the life cycle involves a risk, as some parasites will fail to infect the next host in the cycle. But is this risk consistent? Using a dataset of experimental infections from over a hundred worms, we examine what impacts how likely it is for parasites to establish infection in their next hosts.
@@ -13,12 +16,12 @@ options(stringsAsFactors = FALSE)
 theme_set(new = theme_bw())
 ```
 ```{r}
-dat <- read.csv(file = "data/er_combined.csv", header = T)
-tree <- read.tree(file = "data/full_tree_time_calib.nex")
+dat <- read.csv(file = "../../data/er_combined.csv", header = T)
+tree <- read.tree(file = "../../data/full_tree_time_calib.nex")
 ```
 ```{r}
 # for matching tree tips and species name in data frame
-tips <- read.csv(file = "data/data_tree_tips_table.csv")
+tips <- read.csv(file = "../../data/data_tree_tips_table.csv")
 tips$Parasite.species[which(tips$Parasite.species == "Mesocestoides corti/variabilis/vogae")] <- "Mesocestoides corti"
 tips$Parasite.species[which(tips$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
 tips$Parasite.species[which(tips$Parasite.species == "Macracanthorhynchus hirudinaceous")] <- "Macracanthorhynchus hirudinaceus"
@@ -141,7 +144,7 @@ Here are the different tested models: (1) recovery rate as continuous response, 
 
 ```{r}
 bi <- 1000
-nit <- 5000
+nit <- 41000
 ```
 ```{r}
 # UNIVAR
@@ -492,7 +495,7 @@ sum(is.na(datx$log_hm) | is.na(datx$log_ws))/length(datx$log_hm)
 ```
 
 
-# Weights
+## Weights
 
 Most experimental infections are based on single individuals, but some experiments report infection rates from groups of individuals.
 
@@ -982,11 +985,11 @@ f1bcd
 ```
 ```{r}
 f1 <- cowplot::plot_grid(f1a, f1bcd, rel_widths = c(1.5, 1))
-ggsave(f1, filename = "figs/fig1_imp.png", width = 6, height = 4)
-ggsave(f1, filename = "figs/fig1_imp.svg", width = 6, height = 4)
+ggsave(f1, filename = "../../figs/fig1_imp.png", width = 6, height = 4)
+ggsave(f1, filename = "../../figs/fig1_imp.svg", width = 6, height = 4)
 ```
 
-## Dose
+### Dose
 
 Another researcher-controlled variable that varied within studies was dose. Some studies used multiple doses. Recovery rates might increase with dose (e.g. more worms overwhelm immune responses) or decrease with dose (competition among parasites, increased immune response). Here's how the pattern looks across the studies with multiple doses. Often the relationship is flat or decreasing. And it is usually linear as log-transforming dose did not provide a better fit in most cases.
 
@@ -1993,8 +1996,8 @@ f2 <- ggplot(datx,
        shape = "")
 f2
 
-ggsave(f2, filename = "figs/fig2_imp.png", width = 4, height = 4)
-ggsave(f2, filename = "figs/fig2_imp.svg", width = 4, height = 4) # remove boxes under legend
+ggsave(f2, filename = "../../figs/fig2_imp.png", width = 4, height = 4)
+ggsave(f2, filename = "../../figs/fig2_imp.svg", width = 4, height = 4) # remove boxes under legend
 ```
 
 ### Hypothesis 3: recovery rates increase with worm size
@@ -2193,7 +2196,7 @@ f3 <- ggplot(dat,
   theme(panel.grid.minor = element_blank()) 
   # facet_wrap(~to_int_def)
 f3
-# ggsave(f3, filename = "figs/fig3_imp.png", width = 6, height = 4.5)
+# ggsave(f3, filename = "../../figs/fig3_imp.png", width = 6, height = 4.5)
 ```
 
 Plot is maybe better in separate panels, though the int vs def distinction is less clear...
@@ -2222,8 +2225,8 @@ f3 <- ggplot(dat,
   theme(panel.grid.minor = element_blank()) +
   facet_wrap(~to_int_def)
 f3
-# ggsave(f3, filename = "figs/fig3_imp.png", width = 8, height = 4)
-# ggsave(f3, filename = "figs/fig3_imp.svg", width = 8, height = 4)
+# ggsave(f3, filename = "../../figs/fig3_imp.png", width = 8, height = 4)
+# ggsave(f3, filename = "../../figs/fig3_imp.svg", width = 8, height = 4)
 ```
 
 We can also make the same plot, but without the int vs def host distinction.
@@ -2297,8 +2300,8 @@ f3 <- ggplot(datx,
        size = "Number of\nhosts exposed") +
   theme(panel.grid.minor = element_blank()) 
 f3
-ggsave(f3, filename = "figs/fig3_imp.png", width = 6, height = 4)
-ggsave(f3, filename = "figs/fig3_imp.svg", width = 6, height = 4)
+ggsave(f3, filename = "../../figs/fig3_imp.png", width = 6, height = 4)
+ggsave(f3, filename = "../../figs/fig3_imp.svg", width = 6, height = 4)
 ```
 
 It certainly looks like this pattern is consistent across the wide span of larval sizes. But some of the trend could be driven by detection bias. For example, small worms are harder to find and count. Thus, let's check if recovery still increases with worm size when we restrict the data to the largest third of worm stages.
@@ -2326,6 +2329,7 @@ After restricting the data to large worm stages that are unlikely to be overlook
 ```{r}
 summary(modp3.0l)
 ```
+
 
 ### Hypothesis 4: recovery rates depend on host mass
 
@@ -2616,7 +2620,7 @@ f4 <- ggplot(datx,
   theme(panel.grid.minor = element_blank()) 
   # facet_wrap(~to_int_def)
 f4
-# ggsave(f4, filename = "figs/fig4_imp.png", width = 6, height = 4.5)
+# ggsave(f4, filename = "../../figs/fig4_imp.png", width = 6, height = 4.5)
 ```
 
 Better in two panels?
@@ -2646,8 +2650,8 @@ f4 <- ggplot(datx,
   theme(panel.grid.minor = element_blank()) +
   facet_wrap(~to_int_def)
 f4
-# ggsave(f4, filename = "figs/fig4_imp.png", width = 8, height = 4)
-# ggsave(f4, filename = "figs/fig4_imp.svg", width = 8, height = 4)
+# ggsave(f4, filename = "../../figs/fig4_imp.png", width = 8, height = 4)
+# ggsave(f4, filename = "../../figs/fig4_imp.svg", width = 8, height = 4)
 ```
 
 We can make the same plot, but just distinguishing host in cycle, not int vs def.
@@ -2721,8 +2725,8 @@ f4 <- ggplot(datx,
        size = "Number of\nhosts exposed") +
   theme(panel.grid.minor = element_blank()) 
 f4
-ggsave(f4, filename = "figs/fig4_imp.png", width = 6, height = 4)
-ggsave(f4, filename = "figs/fig4_imp.svg", width = 6, height = 4)
+ggsave(f4, filename = "../../figs/fig4_imp.png", width = 6, height = 4)
+ggsave(f4, filename = "../../figs/fig4_imp.svg", width = 6, height = 4)
 ```
 Finally, we can check whether worm size and host size interact. In other words, is being big relatively more important when the next host is big (or small)?
 
@@ -3153,7 +3157,7 @@ mutate(s, param = row.names(s))%>%
 
 As we now know what kinds of experiments yield high recovery rates (late stage in life cycle, large larvae, small host for given stage), let's look at whether doses follow these trends. That is, do researchers use higher doses when they expect lower recoveries?
 
-## Dose
+# Dose as response variable
 
 Here is the distribution of doses - it varies a lot - but it is reasonably normal on a log scale.
 
@@ -3462,8 +3466,8 @@ f5a <- ggplot(dose_per_study,
   labs(x = "Host in life cycle exposed", y = "Dose",
        shape = "")
 f5a
-# ggsave(f5a, filename = "figs/fig5_imp.png", width = 4, height = 4)
-# ggsave(f5a, filename = "figs/fig5_imp.svg", width = 4, height = 4) # remove boxes under legend
+# ggsave(f5a, filename = "../../figs/fig5_imp.png", width = 4, height = 4)
+# ggsave(f5a, filename = "../../figs/fig5_imp.svg", width = 4, height = 4) # remove boxes under legend
 ```
 
 Mean dose decreases with life cycle stage. The CIs seem a little overconfident, though. Let's pool all exposures from the same study at the same dose and refit the model.
@@ -3881,8 +3885,8 @@ f6c2 <- f6c +
 ```{r}
 f6 <- cowplot::plot_grid(f6a2, f6b2, f6c2,
                          align = "hv", nrow = 1)
-ggsave(f6, filename = "figs/fig5_imp.png", width = 12, height = 4)
-ggsave(f6, filename = "figs/fig5_imp.svg", width = 8, height = 8)
+ggsave(f6, filename = "../../figs/fig5_imp.png", width = 12, height = 4)
+ggsave(f6, filename = "../../figs/fig5_imp.svg", width = 12, height = 4)
 ```
 
 Thus, experimenters usually use higher doses in situations where lower infection rates are expected.

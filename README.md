@@ -10,7 +10,7 @@ The main data source for this study is a [database](https://esajournals.onlineli
 
 # Results
 
-We tested whether parasite recovery 1) increases with life cycle progression, 2) increases with worm size, and 3) decreases with host size. Our full analysis can be found [here](analyses/2_establishment_rate_analyses).
+We tested whether parasite recovery 1) increases with life cycle progression, 2) increases with worm size, and 3) decreases with host size. Our full analysis can be found [here](analyses/3_establishment_rate_analyses/ER_analysis.md).
 
 Our major findings were that helminth recovery increased with life cycle progression, e.g. worms had better success infecting the second host in their life cycle compared to the first host.
 
