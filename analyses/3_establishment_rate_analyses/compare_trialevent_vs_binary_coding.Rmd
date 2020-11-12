@@ -1,0 +1,53 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+e1 <- data.frame(succ = rep(c(1,0), each = 100), fail = rep(c(0,1), each = 100), st = "a")
+e2 <- data.frame(succ = c(5,10), fail = c(500,100), st = "b")
+e3 <- data.frame(succ = c(3,3,1,1), fail = c(1,1,3,3), st = "c")
+e4 <- data.frame(succ = rep(c(1,0), each = 10), fail = rep(c(0,1), each = 10), st = "d")
+e5 <- data.frame(succ = c(100), fail = c(1), st = "e")
+d <- rbind(e1, e2, e3, e4, e5)
+d <- mutate(d, succ = as.integer(succ), fail = as.integer(fail))
+d2 <- d%>%
+  group_by(st)%>%
+  summarize(succ = sum(succ), fail = sum(fail))
+```
+
+```{r}
+m1 <- glm(cbind(succ, fail) ~ 1, data = d, family = "quasibinomial")
+m2 <- glm(cbind(succ, fail) ~ 1, data = d2, family = "quasibinomial")
+```
+```{r}
+summary(m1)
+```
+```{r}
+summary(m2)
+```
+
+```{r}
+boot::inv.logit(coef(m2))
+```
+
+```{r}
+mm1 <- lme4::glmer(cbind(succ, fail) ~ 1 + (1|st), data = d, family = "binomial")
+mm2 <- lme4::glmer(cbind(succ, fail) ~ 1 + (1|st), data = d2, family = "binomial")
+```
+```{r}
+summary(mm1)
+```
+
+```{r}
+summary(mm2)
+```
+
+```{r}
+boot::inv.logit(lme4::fixef(mm2))
+```
+

@@ -1,0 +1,152 @@
+---
+title: "Find experimental studies"
+author: "Dan Benesh"
+date: "8/14/2019"
+output: html_document
+---
+
+Setup work environment
+
+```{r setup}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ape)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+
+Import data
+
+```{r importdata}
+lcdb_hosts <- read.csv(file = "../../data/CLC_database_hosts.csv", header = TRUE)
+lcdb_lh <- read.csv(file = "../../data/CLC_database_lifehistory.csv", header = TRUE)
+```
+
+To find studies in which hosts were experimentally infected, I look for species in which developmental times have been recorded. How many rows are in the life history part of the database?
+
+```{r}
+length(lcdb_lh$Parasite.species)
+```
+
+How many of those rows contain developmental time data?
+
+```{r}
+lcdb_lh_dt <- filter(lcdb_lh, !is.na(Development.time))%>%
+  mutate(citation = paste(Author, Year, ".", Journal, Volume, ":", Pages))%>%
+  select(Parasite.species, Parasite.group, Host.no, Stage, Worm_length = Length, Development.time, citation, Development.remarks)
+
+length(lcdb_lh_dt$Parasite.species)
+```
+
+In some cases, multiple measurements were made on worm development, e.g. development at a higher or lower temperature. How many unique stages were measured (species x as larvae, species y as egg, etc.)?
+
+```{r}
+length(unique(paste(lcdb_lh_dt$Parasite.species, lcdb_lh_dt$Stage)))
+```
+
+On how many unique parasite species?
+
+```{r}
+length(unique(lcdb_lh_dt$Parasite.species))
+```
+
+How many unique references?
+
+```{r}
+length(unique(lcdb_lh_dt$citation))
+```
+
+How many cases are there for different types of stages?
+
+```{r}
+t_df <- select(lcdb_lh_dt, Parasite.species, Stage)%>%distinct()
+table(t_df$Stage)
+```
+
+The most common cases where worm development was measured were in the first intermediate host (n=471), as an adult (n=332), or as a propagule (n=167+46). To get the developmental time measurements in intermediate hosts and definitive hosts, they needed to be infected experimentally. The egg devo times are for worms that require some development in the external environment before they are able to infect the next host. As this is happening in the environment, it can be observed without infecting hosts, so these studies are less likely to include experimental infections. Let's remove them from our list of potential studies.
+
+```{r}
+lcdb_lh_dt <- filter(lcdb_lh_dt, Host.no != 0)
+```
+
+Now, how many species are left?
+
+```{r}
+length(unique(lcdb_lh_dt$Parasite.species))
+```
+
+And how many unique references?
+
+```{r}
+length(unique(lcdb_lh_dt$citation))
+```
+
+That's still quite a lot. Maybe it could be narrowed down more by looking at the size range of transmission stages.
+
+```{r}
+get_trans_stage <- lcdb_lh_dt%>%
+  select(Parasite.species, Host.no)%>%distinct()%>%
+  mutate(Host.no_trans_stage = Host.no - 1)
+```
+
+```{r}
+
+trans_sizes_with_devo <- mutate(lcdb_lh, trans_stage = paste(Parasite.species, Host.no))%>%
+  filter(trans_stage %in% paste(get_trans_stage$Parasite.species, get_trans_stage$Host.no_trans_stage))%>%
+  group_by(Parasite.species, Host.no, Stage)%>%
+  summarize(Worm_length = mean(Length, na.rm = T))%>%
+  filter(!is.nan(Worm_length), Stage != "embryo")
+
+trans_sizes_with_devo <- mutate(trans_sizes_with_devo, Stage2 = if_else(Stage == "egg" | Stage == "free larva", "propagule",
+                                                                        if_else(Stage == "2larv" | Stage == "3larv" | Stage == "4larv", "second or third int host",
+                                                                                "first int host")))%>%
+  mutate(Stage2 = factor(Stage2, levels = c("propagule", "first int host", "second or third int host")))
+```
+
+
+What is the frequency distribution for parasite sizes at infection?
+
+```{r}
+ggplot(trans_sizes_with_devo, aes(x = Worm_length)) + 
+  geom_histogram() +
+  scale_x_log10() +
+  facet_wrap(~Stage2, ncol = 1, scales = "free_y")
+```
+
+Two things from this plot. First, the data cover about 2.5 orders of magnitude on the x-axis, so the length of worms when they infect their next host varies 100 to 1000-fold (this is even bigger if we talk about worm mass, which is more like a cube function of the length). Second, the amount of potential data varies across stages (note the y-axis varies in the panels). There are quite a lot of cases where the propagule (egg or free larva) is used to infect the first host. There are also a fair number of studies in which the larva from a first intermediate host are used to infect the second host. There are only a few cases of a larva from a second or third intermediate host used to infect the next host.
+
+So, my sampling strategy would be to look for studies in each of the categories above, and try to pick them so they cover the full range of worm sizes. Here's a dataframe that contains the relevant information to start going through papers.
+
+```{r}
+trans_sizes_with_devo <- mutate(ungroup(trans_sizes_with_devo), Host.no = Host.no+1)
+output_df <- left_join(select(trans_sizes_with_devo, Parasite.species, next_host_num = Host.no, transmission_stage = Stage2, transmission_stage_length_avg = Worm_length),
+                       select(lcdb_lh_dt, Parasite.species, Parasite.group, next_host_num = Host.no, devo_time_in_next_host = Development.time, devo_citation = citation))
+```
+```{r}
+output_df <- select(output_df, Parasite.species, Parasite.group, transmission_stage, next_host_num, transmission_stage_length_avg, devo_time_in_next_host, devo_citation)
+output_df <- select(output_df, -devo_time_in_next_host)%>%distinct()
+```
+
+```{r}
+library(knitr)
+library(kableExtra)
+kable(output_df, format = 'html')%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))%>%
+  scroll_box(width = "100%", height = "500px")
+```
+
+I wrote this dataframe to file in the data folder.
+
+```{r}
+# write.csv(output_df, file = "../../data/promising_studies_for_exp_infections.csv", row.names = F)
+```
+
+```{r}
+output_df2 <- select(output_df, -transmission_stage_length_avg)%>%distinct()
+```
+
+```{r}
+# write.csv(output_df2, file = "../../data/promising_studies_for_exp_infections2.csv", row.names = F)
+```

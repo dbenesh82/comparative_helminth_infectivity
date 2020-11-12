@@ -1,0 +1,439 @@
+---
+title: "Make combined data frame"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ape)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+
+Here, I combine Spencer's establishment rate data with other data (worm size, host size).
+
+# Wrangling
+
+```{r}
+dat <- read.csv(file = "data/compiled_exp_infs_201020.csv", header = T)
+```
+
+How many parasite species?
+
+```{r}
+# dat <- rename(dat, Species = `ï..Species`)
+length(unique(dat$Species))
+```
+
+How many infections?
+
+```{r}
+dim(dat)[1]
+```
+
+Strange combinations of larva and next host?
+
+```{r}
+with(dat, table(Stage, Next_Host))
+```
+
+What is the distribution of recovery rates? 
+
+```{r}
+ggplot(dat, aes(x = Recovery_Rate)) +
+  geom_histogram(binwidth = 0.05) 
+```
+
+Here are the data points where more worms were recovered than given (recovered > dose). 
+
+```{r}
+filter(dat, Recovery_Rate > 1)
+```
+
+A number of data points have non-integer recovery values, which is relevant for fitting logistic regressions.
+
+```{r}
+filter(dat, Recovered %% 1 != 0)%>%
+  select(Species, Dose, Recovered, Study)
+```
+
+Let's add in the lcdb !
+
+```{r, message=FALSE, warning=FALSE}
+lcdb_hosts <- read.csv(file = "data/CLC_database_hosts.csv", header = T)
+lcdb_lh <- read.csv(file="data/CLC_database_lifehistory.csv", header = TRUE, sep=",")
+tree <- read.tree(file = "data/full_tree_time_calib.nex")
+tips <- read.csv(file = "data/data_tree_tips_table.csv")
+```
+```{r}
+lcdb_lh <- left_join(lcdb_lh, tips)
+```
+
+A number of spelling mistakes in LCDB need to be corrected for matching.
+
+```{r}
+# fix some names for matching
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Macracanthorhynchus hirudinaceous")] <- "Macracanthorhynchus hirudinaceus"
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Macracanthorhynchus hirudinaceous")] <- "Macracanthorhynchus hirudinaceus"
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Mesocestoides lineatus/litteratus")] <- "Mesocestoides lineatus"
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Mesocestoides lineatus/litteratus")] <- "Mesocestoides lineatus"
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Mesocestoides corti/variabilis/vogae")] <- "Mesocestoides corti"
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Mesocestoides corti/variabilis/vogae")] <- "Mesocestoides corti"
+
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Obeliscoides cuniculi multistriatus")] <- "Obeliscoides cuniculi" # matches 
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Obeliscoides cuniculi cuniculi")] <- "Obeliscoides cuniculi" # matches Spencers name
+lcdb_lh$Parasite.species[which(lcdb_lh$Parasite.species == "Rodentolepis microstoma")] <- "Hymenolepis microstoma" # matches Spencers name
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Obeliscoides cuniculi multistriatus")] <- "Obeliscoides cuniculi" # matches 
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Obeliscoides cuniculi cuniculi")] <- "Obeliscoides cuniculi" # matches Spencers name
+lcdb_hosts$Parasite.species[which(lcdb_hosts$Parasite.species == "Rodentolepis microstoma")] <- "Hymenolepis microstoma" # matches Spencers name
+```
+
+Only one species in establishment data that was not in lcdb
+
+```{r}
+filter(dat, !Species %in% lcdb_lh$Parasite.species)%>%
+  select(Species)%>%distinct()
+```
+
+This is probably D. ditremum.
+
+```{r}
+dat$Species[which(dat$Species == "Diphyllobothrium vogeli")] <- "Diphyllobothrium ditremum" # matches 
+```
+
+Convert length and width measurements into estimates of biomass.
+
+```{r, message=FALSE, warning=FALSE}
+lcdb_lh <- mutate(lcdb_lh, biovolume = 
+                  if_else(Shape %in% c("cylinder", "thread-like", "whip"), 
+                          pi * (Width/2)^2 * Length, # calculate volume as a cylinder
+                          if_else(Shape %in% c("coiled", "sphere", "ellipsoid"),
+                                  4/3 * pi * Length/2 * Width/2 * Width/2, # calculate volume as a ellipsoid
+                                  Length * Width # calculate volume as area for remaining ribbon, leaf shapes
+                                  ))) # could also convert to biomass with assumed 1.1 g/cm3 tissue density 
+```
+```{r}
+lcdb_lh <- mutate(lcdb_lh, degree.days = Development.time*(Temp - 5)) # degree days calc
+```
+
+For each parasite species, we want to calculate how much growth occurs in each stage. But before doing that, we should eliminate a few troublesome values (species with asexual reproduction as larvae and adult male measurements).
+
+```{r, message=FALSE, warning=FALSE}
+asex <- filter(lcdb_lh, !is.na(Asexual) | Parasite.genus == "Echinococcus")%>%
+  select(Parasite.species, Stage, Asexual, Size.remarks)%>%distinct()
+asex_indiv_larvae <- unique(filter(asex, Asexual == "individual")$Parasite.species) # remove these species completely
+asex_spp <- unique(asex$Parasite.species) # remove adults of these species
+rm(asex)
+```
+
+Then we eliminate adult male measurements, since female fecundity is tied to body size. 
+
+```{r, message=FALSE, warning=FALSE}
+# replace adult male life history with NA - only want devo time and body size for females
+mv <- which(lcdb_lh$Stage == 'adult' & lcdb_lh$Sex == 'm')
+lcdb_lh$Length[mv] <- NA
+lcdb_lh$Width[mv] <- NA
+lcdb_lh$Development.time[mv] <- NA
+lcdb_lh$Temp[mv] <- NA
+lcdb_lh$biovolume[mv] <- NA
+# lcdb_lh <- filter(lcdb_lh, !(Stage == 'adult' & Sex == 'm')|is.na(Sex) ) # remove adult males
+```
+
+Life starts as a propagule, and there are multiple propagule size measurements for a given species. If the egg hatches, we want to take the free larva stage. If it does not hatch, we would like the embryo stage (this is what hatches from the egg and better represents initial size at growth). However, embryo sizes were comparatively rare. Therefore, we took egg size as initial size if the eggs did not hatch.
+
+```{r, message=FALSE, warning=FALSE}
+# id species that hatch or not
+eggos <- filter(lcdb_lh, Host.no == 0)%>%
+  select(Parasite.species, Egg.hatch)%>%
+  mutate(propagule_selector = if_else(Egg.hatch != "eaten", "free larva", "egg"))%>%
+  select(-Egg.hatch)%>%
+  na.omit%>%distinct()
+
+# determine whether there is a size measurement for embryo or egg stages
+eggos2 <- filter(lcdb_lh, Host.no == 0)%>%
+  select(Parasite.species, Stage, biovolume)%>%
+  group_by(Parasite.species, Stage)%>%
+  summarize(x = sum(!is.na(biovolume)))
+
+# combine and spread these two tables
+eggos2 <- left_join(eggos, eggos2)
+eggos2 <- spread(na.omit(eggos2), Stage, x)
+
+# # identify the stage where growth starts for each species
+# eggos2 <- mutate(eggos2, propagule_selector = if_else(propagule_selector == 'free larva', 'free larva',
+#                                                        if_else(embryo > 0, 'embryo', 'egg')))
+
+# add selector variable to main life history table
+# eggos2 <- select(eggos2, Parasite.species, propagule_selector)
+lcdb_lh <- left_join(lcdb_lh, eggos)
+rm(eggos, eggos2)
+```
+
+Remove propagule measurements that do not best reflect the initial growth size.
+
+```{r, message=FALSE, warning=FALSE}
+lcdb_lh <- filter(lcdb_lh, !(Host.no == 0 & Stage != propagule_selector))
+```
+
+Average parasite life history traits at level of life stages.
+
+```{r, message=FALSE, warning=FALSE}
+lcdb_lh.sp <- group_by(lcdb_lh, Parasite.species, Host.no)%>%
+  summarize(avg_length = mean(Length, na.rm=T), avg_width = mean(Width, na.rm=T), 
+            biovolume = mean(biovolume, na.rm=T), 
+            avg_dt = mean(Development.time, na.rm = T), avg_dd = mean(degree.days, na.rm = T))
+# if can't calculate, replace NaN with NA
+lcdb_lh.sp$avg_length[is.nan(lcdb_lh.sp$avg_length)] <- NA
+lcdb_lh.sp$avg_width[is.nan(lcdb_lh.sp$avg_width)] <- NA
+lcdb_lh.sp$biovolume[is.nan(lcdb_lh.sp$biovolume)] <- NA
+lcdb_lh.sp$avg_dt[is.nan(lcdb_lh.sp$avg_dt)] <- NA
+lcdb_lh.sp$avg_dd[is.nan(lcdb_lh.sp$avg_dd)] <- NA
+```
+
+```{r}
+# add def vs int host distinction
+lcdb_hosts_sp <- lcdb_hosts%>%
+  select(Parasite.species, Host.no, Def.int)%>%
+  distinct()
+```
+```{r}
+lcdb_lh.sp <- left_join(lcdb_lh.sp, lcdb_hosts_sp)
+lcdb_lh.sp <- lcdb_lh.sp%>%
+  group_by(Parasite.species)%>%
+  mutate(to_int_def = lead(Def.int))%>%
+  rename(int_def_current_host = Def.int)%>%
+  ungroup()
+lcdb_lh.sp <- mutate(lcdb_lh.sp, match = paste(Parasite.species, Host.no))%>%
+  select(-Parasite.species, -Host.no)
+```
+
+Add to recovery data
+
+```{r}
+dat <- mutate(dat, current_host = Next_Host - 1)%>%
+  mutate(match = paste(Species, current_host))
+```
+```{r}
+dat <- left_join(dat, lcdb_lh.sp)
+```
+
+Stage biovolume usually present
+
+```{r}
+table(is.na(dat$biovolume))
+```
+
+```{r}
+# filter(dat, is.na(biovolume))%>%
+#   select(Species, Next_Host)%>%distinct()
+```
+
+The stage for a fair number of species is wrong, though. For example, when a final host was infected without a paratenic host, it might be categorized as intermediate host.
+
+```{r}
+dat$to_int_def[which(dat$Species == "Angiostrongylus cantonensis" & dat$Host_Species == "Rattus norvegicus")] <- "def"
+
+dat$to_int_def[which(dat$Species == "Angiostrongylus vasorum" & dat$Host_Species == "Canis familiaris")] <- "def"
+
+dat$to_int_def[which(dat$Species == "Anguillicola crassus" & dat$Host_Species == "Anguilla anguilla")] <- "def"
+dat$to_int_def[which(dat$Species == "Cosmocephalus obvelatus" & dat$Host_Species %in% c("Larus delawarensis", "Larus argentatus"))] <- "def"
+dat$to_int_def[which(dat$Species == "Dioctophyme renale" & dat$Host_Species == "Neovison vison")] <- "def"
+dat$to_int_def[which(dat$Species == "Diphyllobothrium dendriticum" & dat$Host_Species %in% c("Mesocricetus auratus", "Rattus norvegicus", "Larus argentatus", "Larus canus", "Chroicocephalus ridibundus", "Sterna hirundo", "Canis familiaris", "Felis catus", "Mus musculus"))] <- "def"
+
+dat$to_int_def[which(dat$Species == "Diphyllobothrium ditremum" & dat$Host_Species == "Mesocricetus auratus")] <- "def"
+dat$to_int_def[which(dat$Species == "Diphyllobothrium latum" & dat$Host_Species %in% c("Mesocricetus auratus", "Canis familiaris", "Homo sapiens"))] <- "def"
+dat$to_int_def[which(dat$Species == "Dicranotaenia coronula" & dat$Host_Species == "Anas platyrhynchos")] <- "def"
+dat$to_int_def[which(dat$Species == "Dracunculus insignis" & dat$Host_Species == "Procyon lotor")] <- "def"
+dat$to_int_def[which(dat$Species == "Dracunculus insignis" & dat$Host_Species == "Mustela putorius")] <- "def"
+dat$to_int_def[which(dat$Species == "Gnathostoma nipponicum" & dat$Host_Species == "Mustela nivalis")] <- "def"
+dat$to_int_def[which(dat$Species == "Gnathostoma spinigerum" & dat$Host_Species == "Felis catus")] <- "def"
+dat$to_int_def[which(dat$Species == "Hymenolepis nana" & dat$Host_Species == "Mus musculus")] <- "def"
+dat$to_int_def[which(dat$Species == "Leptorhynchoides thecatus" & dat$Host_Species == "Micropterus salmoides")] <- "def"
+dat$to_int_def[which(dat$Species == "Paracuaria adunca" & dat$Host_Species == "Larus delawarensis")] <- "def"
+dat$to_int_def[which(dat$Species == "Streptocara crassicauda" & dat$Host_Species %in% c("Anas crecca", "Anas platyrhynchos", "Aythya affinis", "Anas strepera"))] <- "def"
+dat$to_int_def[which(dat$Species == "Toxascaris leonina" & dat$Host_Species == "Felis catus")] <- "def"
+dat$to_int_def[which(dat$Species == "Toxocara canis" & dat$Host_Species == "Canis familiaris")] <- "def"
+dat$to_int_def[which(dat$Species == "Toxocara canis" & dat$Host_Species == "Alopex lagopus")] <- "def"
+dat$to_int_def[which(dat$Species == "Toxocara cati" & dat$Host_Species == "Felis catus")] <- "def"
+```
+
+
+Now let's add host size
+
+```{r}
+hs <- read.csv(file = "data/host_size_combined.csv")
+```
+
+Correct some misspelled names.
+
+```{r}
+dat$Host_Species[which(dat$Host_Species == "Lymnea palustris")] <- "Lymnaea palustris"
+dat$Host_Species[which(dat$Host_Species == "Laevicaulus alte")] <- "Laevicaulis alte"
+dat$Host_Species[which(dat$Host_Species == "Derocerus laeve")] <- "Deroceras laeve"
+dat$Host_Species[which(dat$Host_Species == "Clethrionomus rufocanus")] <- "Myodes rufocanus"
+dat$Host_Species[which(dat$Host_Species == "Alopex lagopus")] <- "Vulpes lagopus"
+```
+
+These are ones without match in size DB - some of those with a match also lack body mass data.
+
+```{r}
+filter(dat, !Host_Species %in% unique(hs$binomial))%>%
+  select(Species, Host_Species)%>%
+  distinct()
+```
+
+
+Combine establishment and host size data.
+
+```{r}
+hs_sp <- group_by(hs, binomial)%>%
+  summarize(bm = mean(body.mass, na.rm = T))%>%
+  filter(!is.nan(bm))
+```
+```{r}
+dat <- left_join(dat, hs_sp, by = c("Host_Species" = "binomial"))
+```
+
+Most have body masses. 
+
+```{r}
+table(is.na(dat$bm))
+```
+Here are the hosts lacking masses.
+
+```{r}
+filter(dat, is.na(bm))%>%
+  select(Host_Species)%>%
+  distinct()
+```
+
+Take genus average for the cases with missing data.
+
+```{r}
+gen_sp <- group_by(hs, genus)%>%
+  summarize(bm = mean(body.mass, na.rm = T))%>%
+  filter(!is.nan(bm))
+```
+
+```{r}
+dat <- mutate(dat, host_genus = substr(Host_Species, 1, regexpr(" ", Host_Species)-1))
+```
+```{r}
+filter(dat, !host_genus %in% unique(gen_sp$genus))%>%
+  select(Species, host_genus)%>%
+  distinct()
+```
+```{r}
+dat <- left_join(dat, rename(gen_sp, bm2 = bm), by = c("host_genus" = "genus"))
+dat <- mutate(dat, host_bm = if_else(!is.na(bm), bm, bm2)) # if body mass for host species unavailable, take genus avg
+#  select(dat, Host_Species, host_genus, bm, bm2, host_bm) # check
+dat <- select(dat, -bm, -bm2)
+```
+
+Any missing host mass after adding genus-level mass data?
+
+```{r}
+table(is.na(dat$host_bm))
+```
+
+Maybe we can fill in these data...
+
+```{r}
+stages_missing_host_bm <- dat%>%
+  filter(is.na(host_bm))%>%
+  .$match
+stages_missing_host_bm <- unique(stages_missing_host_bm)
+
+stages_missing_biov <- dat%>%
+  filter(is.na(biovolume))%>%
+  .$match
+stages_missing_biov <- unique(stages_missing_biov)
+```
+
+```{r}
+stages <- read.csv("../lcl_host_types/data/imputed_stage_level_tables/stage_level_combined_bestimputed.csv", header = T)
+stages$Parasite.species[which(stages$Parasite.species == "Mesocestoides corti/variabilis/vogae")] <- "Mesocestoides corti"
+stages$Parasite.species[which(stages$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
+stages$Parasite.species[which(stages$Parasite.species == "Macracanthorhynchus hirudinaceous")] <- "Macracanthorhynchus hirudinaceus"
+stages$Parasite.species[which(stages$Parasite.species == "Mesocestoides lineatus/litteratus")] <- "Mesocestoides lineatus"
+
+stages$Parasite.species[which(stages$Parasite.species == "Obeliscoides cuniculi multistriatus")] <- "Obeliscoides cuniculi" # matches 
+stages$Parasite.species[which(stages$Parasite.species == "Obeliscoides cuniculi cuniculi")] <- "Obeliscoides cuniculi" # matches Spencers name
+stages$Parasite.species[which(stages$Parasite.species == "Rodentolepis microstoma")] <- "Hymenolepis microstoma" # matches Spencers name
+```
+```{r}
+p_tax <- stages%>%
+  select(Parasite.species, parasite_genus, parasite_family, parasite_order, parasite_class, parasite_phylum)%>%
+  distinct()
+
+# add taxonomy
+dat <- left_join(dat, p_tax, by = c("Species" = "Parasite.species"))
+```
+
+```{r}
+stages1 <- mutate(stages, match = paste(Parasite.species, Host.no-1),
+                 host_bm = 10^host_bm)%>%
+  filter(match %in% stages_missing_host_bm)
+```
+
+```{r}
+dat <- left_join(dat, select(stages1, match, imp_host_bm = host_bm), by = "match")
+dat <- mutate(dat, imp_host_bm = if_else(!is.na(host_bm), host_bm, imp_host_bm))
+rm(stages1)
+```
+
+```{r}
+eggos <- filter(stages, Host.no == 1)%>%
+  select(Parasite.species, imp_biovolume = imp_initial_biov)
+eggos$Host.no <- 0
+
+stages2 <- bind_rows(stages, eggos)%>%
+  select(Host.no, Parasite.species, imp_biovolume)%>%
+  arrange(Parasite.species, Host.no)
+
+stages2 <- mutate(stages2, match = paste(Parasite.species, Host.no))%>%
+  filter(match %in% stages_missing_biov)
+```
+
+```{r}
+dat <- left_join(dat, select(stages2, match, imp_biovolume), by = "match")
+dat <- mutate(dat, imp_biovolume = if_else(!is.na(biovolume), biovolume, imp_biovolume))
+```
+```{r}
+table(is.na(dat$imp_biovolume))
+```
+```{r}
+filter(dat, is.na(imp_biovolume))
+```
+
+Fill it in by hand...
+
+```{r}
+iv <- filter(stages, grepl(pattern = "Polydelphis anoura", Parasite.species), Host.no == 2)%>%
+  select(imp_biovolume = imp_initial_biov)%>%
+  .$imp_biovolume
+mv <- which(dat$Species == "Polydelphis anoura" & dat$Next_Host== 2)
+dat$imp_biovolume[mv] <- iv
+```
+```{r}
+table(is.na(dat$imp_biovolume))
+```
+```{r}
+dat <- dat%>%
+  select(Species, parasite_genus, parasite_family, parasite_order, parasite_class, parasite_phylum,
+         Parasite_Group, Stage, Next_Host, Exposure_Type, Sample_Size, Dose, Recovered, Recovery_Rate, Time_Dissection,
+         Age_Inf, Time_Course, Study, Remarks, Host_Species, host_genus, Detect_Problem, 
+         avg_length, avg_width, biovolume, imp_biovolume,
+         int_def_current_host, to_int_def, host_bm, imp_host_bm)
+```
+
+Write combined data table to csv.
+
+```{r}
+write.csv(dat, file = "data/er_combined.csv", row.names = F)
+```
+
