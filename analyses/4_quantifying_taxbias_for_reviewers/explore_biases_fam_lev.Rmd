@@ -1,0 +1,993 @@
+---
+title: "Biases"
+output: 
+  github_document:
+    toc: true
+    df_print: kable
+---
+
+In this notebook, we explore various kinds of biases in our comparative data. We explore these biases at the parasite family level. That is, we look for families that are more or less represented in the life cycle database relative to their general diversity, and for families that are over/underrepresented in the recovery rate data relative to the life cycle database.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+
+# Wrangle
+
+In another [notebook](get_study_effort_family.Rmd), we generated a family-level table that included study effort.
+
+```{r}
+# import family level study effort
+g_lev <- read.csv(file = "../../data/study_effort_family.csv", header = TRUE)
+# import taxonomy
+ac <- read.csv(file = "../../data/acanth_taxonomy.csv", header = T)
+ce <- read.csv(file = "../../data/cest_taxonomy.csv", header = T)
+ne <- read.csv(file = "../../data/nem_taxonomy_rotl.csv", header = T)
+p_tax <- bind_rows(ac, ce, ne)
+
+g_lev <- left_join(g_lev,
+                   select(p_tax, parasite_family = family, parasite_order = order, 
+                          parasite_class = class, parasite_phylum = phylum)%>%
+                     distinct(), 
+                   by = "parasite_family")
+```
+
+Then we add habitat from the life cycle database: freshwater, marine, or terrestrial. In some families, the hosts recorded occupy different habitats (e.g. some aquatic hosts, some terrestrial hosts). In those cases where less than 75% of the hosts were from the same habitat category, we considered the habitat as "mixed". 
+
+```{r}
+# import LCDB
+dat_host <- read.csv(file = "../../data/CLC_database_hosts.csv", header = TRUE)
+dat_host$Parasite.genus[which(dat_host$Parasite.genus == "Dioctophyma")] <- "Dioctophyme"
+dat_host$Parasite.genus[which(dat_host$Parasite.genus == "Amplicaecum")] <- "Ophidascaris"
+
+dat_host <- left_join(dat_host, 
+                 select(p_tax, genus, parasite_family = family, parasite_order = order)%>%distinct(), 
+                 by = c("Parasite.genus" = "genus"))
+
+habs <- select(dat_host, Host.species, parasite_family, Host.habitat)%>%
+  distinct()%>%
+  group_by(parasite_family, Host.habitat)%>%
+  summarise(n_spp = n())%>%
+  mutate(max_hab = sum(n_spp))%>%
+  mutate(prop_hosts_in_habitat = n_spp/max_hab)%>%
+  arrange(parasite_family, desc(n_spp))%>%
+  slice_head(n = 1)%>%
+  ungroup()%>%
+  mutate(habitat = if_else(prop_hosts_in_habitat < 0.75, "mixed", Host.habitat))
+```
+
+```{r}
+g_lev <- left_join(g_lev, 
+                   select(habs, parasite_family, habitat),
+                   by = "parasite_family")
+```
+
+Next, we added the typical final host type for a family: bird, mammal, herp, fish, or invert. We only defined *final* host type, not intermediate host type, because not all families have intermediate hosts and some families have life cycles with multiple intermediate hosts.
+
+```{r}
+stages <- read.csv("../../../lcl_host_types/data/imputed_stage_level_tables/stage_level_combined_bestimputed.csv", header = T)
+
+ht <- data.frame(host_class = unique(stages$host_class),
+                 host_type1 = c("terr arth", "reptile", "mammal", "amphibian", "mollusc", "fish", "crustacean",
+                                "crustacean", "fish", "bird", "mollusc", "annelid", "crustacean", "terr arth", NA,
+                                "terr arth", "mollusc", "crustacean", "annelid", "terr arth", "fish"
+                                ))
+ht <- ht%>%
+  filter(!is.na(host_type1))%>%
+  mutate(host_type2 = if_else(host_type1 %in% c("terr arth", "crustacean", "mollusc", "annelid"), "invertebrate",
+                              if_else(host_type1 %in% c("reptile", "amphibian"), "herptile", host_type1)))
+stages <- left_join(stages, ht)
+```
+```{r}
+dh <- stages%>%
+  filter(Def.int == "def")%>%
+  group_by(parasite_family, host_type2)%>%
+  summarise(n_spp = n())%>%
+  mutate(max_hab = sum(n_spp))%>%
+  mutate(prop_stages_in_host_type = n_spp/max_hab)%>%
+  arrange(parasite_family, desc(n_spp))%>%
+  slice_head(n = 1)%>%
+  ungroup()%>%
+  mutate(host_type_dh = if_else(prop_stages_in_host_type < 0.75, "mixed", host_type2))
+# ih1 <- stages%>%
+#   filter(Host.no == 1, Def.int == "int")%>%
+#   group_by(parasite_family, host_type2)%>%
+#   summarise(n_spp = n())%>%
+#   mutate(max_hab = sum(n_spp))%>%
+#   mutate(prop_stages_in_host_type = n_spp/max_hab)%>%
+#   arrange(parasite_family, desc(n_spp))%>%
+#   slice_head(n = 1)%>%
+#   ungroup()%>%
+#   mutate(host_type_ih1 = if_else(prop_stages_in_host_type < 0.75, "mixed", host_type2))
+# # ih2 <- stages%>% # second int hosts too few in rr data
+#   filter(Host.no == 2, Def.int == "int")%>%
+#   group_by(parasite_family, host_type1)%>%
+#   summarise(n_spp = n())%>%
+#   mutate(max_hab = sum(n_spp))%>%
+#   mutate(prop_stages_in_host_type = n_spp/max_hab)%>%
+#   arrange(parasite_family, desc(n_spp))%>%
+#   slice_head(n = 1)%>%
+#   ungroup()%>%
+#   mutate(host_type1 = if_else(prop_stages_in_host_type < 0.75, "mixed", host_type1))
+```
+
+```{r}
+g_lev <- left_join(g_lev, 
+                   select(dh, parasite_family, host_type_dh),
+                   by = "parasite_family")
+
+# g_lev <- left_join(g_lev, 
+#                    select(ih1, parasite_family, host_type_ih1),
+#                    by = "parasite_family")
+```
+
+# Descriptives
+
+Here are some descriptive statistics. How many parasite families are represented in the open tree taxonomy (ott), life cycle database (lcdb), and recovery rate data (rr)?
+
+```{r}
+se <- bind_rows(
+  g_lev%>%filter(n_spp_ot != 0)%>%mutate(db = "ot"),
+  g_lev%>%filter(n_spp_lcdb != 0)%>%mutate(db = "lcdb"),
+  g_lev%>%filter(n_spp_rr != 0)%>%mutate(db = "rr")
+)%>%
+  mutate(db = fct_relevel(db, c("ot", "lcdb", "rr")))
+```
+```{r}
+se%>%
+  group_by(db)%>%
+  summarise(num_families = n())
+```
+
+Here are the number of orders:
+
+```{r}
+se%>%
+  group_by(db)%>%
+  summarise(num_orders = n_distinct(parasite_order))
+```
+
+Number of classes:
+
+```{r}
+se%>%
+  group_by(db)%>%
+  summarise(num_class = n_distinct(parasite_class))
+```
+
+we only have habitat and host type information for families represented in the life cycle database. How many families are in each habitat in each dataset? There are few marine families in the recovery rate data.
+
+```{r}
+se%>%
+  filter(db != "ot")%>%
+  group_by(db, habitat)%>%
+  summarise(num_families = n())%>%
+  ungroup()%>%
+  pivot_wider(names_from = db, values_from = num_families, names_prefix = "num_fams_")
+```
+
+There are also relatively few recovery experiments with herps (reptiles or amphibians) and many with mammals.
+
+```{r}
+se%>%
+  filter(db != "ot")%>%
+  group_by(db, host_type_dh)%>%
+  summarise(num_families = n())%>%
+  ungroup()%>%
+  pivot_wider(names_from = db, values_from = num_families, names_prefix = "num_fams_")
+```
+
+# Worm families overrepresented in life cycle database and recovery data relative to their overall diversity
+
+We mined our recovery data from studies in the life cycle database. Therefore, we should consider taxonomic biases in the recovery data *and* the life cycle database, relative to overall helminth diversity. Presumably, some parasite families are overrepresented in the database, because they are medically important or are easy to study. To test whether some families are over or underrepesented, we calculated the number of species in the life cycle database and number of species in the open tree taxonomy from each family. Families that are overrepresented in the life cycle database should have a larger percent of their overall diversity included in the database. To model this, we fit generalized linear mixed models (binomial errors) for the proportion of overall family-level species diversity included in the recovery data and life cycle database (i.e. number of species in family in data / number of species in family, measured from ott). 
+
+Parasite family was a random effect - high and low values represent families that are over and underrepresented in the data relative to the open tree taxonomy.
+
+
+## Taxonomy
+
+```{r}
+library(lme4)
+```
+```{r}
+# pivot data to be long, with an entry for lcdb and rr datasets
+g_levx <- g_lev%>%
+  pivot_longer(n_spp_lcdb:n_spp_rr, names_to = "db", values_to = "n_spp")%>%
+  mutate(db = gsub(pattern = "n_spp_", replacement = "", db),
+         prop_ott = n_spp/n_spp_ot)
+```
+```{r}
+mod <- glmer(cbind(n_spp, n_spp_ot-n_spp) ~ db + (1|parasite_family), 
+                     data = filter(g_levx, n_spp_ot >= n_spp), # remove a few cases where there were no ott species
+                     family = "binomial")
+
+mod0 <- update(mod, . ~ . + (db|parasite_family) - (1|parasite_family))
+mod0alt <- update(mod, . ~ . + (db-1|parasite_family) - (1|parasite_family))
+```
+
+We want to know if the same families are over/underrepresented in the life cycle database and the recovery rate data. Therefore, we allowed a random interaction between parasite family and dataset (lcdb vs rr). This is a row-level effect and is therefore basically the residual variance. Adding this effect is a clear improvement.
+
+```{r}
+anova(mod, mod0)
+```
+
+```{r}
+fe <- fixef(mod0)
+df_int <- data.frame(db = c("lcdb", "rr"),
+                     prop = c(boot::inv.logit( fe[1] ),
+                              boot::inv.logit( fe[1] + fe[2] )
+                              ))
+rm(fe)
+```
+
+The model included a fixed effect for "dataset". It indicated that on average just `round(df_int$prop[1] * 100, 2)`% of the species in a family were included in the life cycle database and just `round(df_int$prop[2] * 100, 2)`% of the species in the recovery data. This was expected; more life cycles are known than infection rate experiments. The low values overall are due to many families having zero representation in the life cycle and recovery datasets, as seen in this histogram.
+
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp), 
+       aes(x = n_spp/n_spp_ot)) +
+  geom_histogram() +
+  facet_wrap(~ db) +
+  labs(x = "Proportion of total species diversity in lcdb")
+```
+
+The model's random effects quantify the over and under representation of different taxa. Note the variance components in model summary.
+
+```{r}
+summary(mod0alt)
+```
+
+The family-level variance was a bit higher in the recovery rate data than the life cycle data, which suggests that differences among families in their representation is more extreme in the recovery data. This makes sense. If the life cycle data is a subset of the total diversity, then the recovery data is a subset of subset. Also note in the summary that the random effect estimates were highly correlated across datasets (>0.9), indicating that families the were overrepresented in the life cycle data were also overrepresented in the recovery data.
+
+Here are the 20 families that are proportionally most over-represented in both the life cycle and recovery data (the combined random effect for each dataset). These tend to be either diverse, well-studied groups (e.g. Ascarididae, Taeniidae), taxa with unique phylogenetic positions (e.g. Spathebothriidae), or groups where the known diversity is probably underestimated (e.g. Ophidascaridae, Fessisentidae).
+
+```{r}
+re <- ranef(mod0alt)
+re <- re$parasite_family
+re$parasite_family <- row.names(re)
+re <- re%>%
+  mutate(comb_re = (dblcdb + dbrr)/2, 
+         diff_re = dbrr - dblcdb)
+re <- left_join(re, select(g_lev, parasite_family, parasite_phylum)%>%distinct())
+arrange(re,desc(comb_re))%>%slice_head(n=20)
+```
+
+Here are the 20 families most overrepresented in the recovery data compared to the life cycle database. They seem to biased towards highly studied groups like ascarids, diphyllobothirds, haemonchids, etc.
+
+```{r}
+arrange(re,desc(diff_re))%>%slice_head(n=20)
+```
+
+Here are the 20 families most underrepresented in both datasets, relative to overall diversity. There are mostly nematodes that are parasitoids (Mermithidae), plant parasites (Longidoridae, Hoplolaimidae), or entomopathogens (Steinernematidae), and therefore are not represented in the life cycle database (which was focused on trophically-transmitted parasites).
+
+```{r}
+arrange(re,comb_re)%>%slice_head(n=20)
+```
+
+This raises the question of whether nematode families are more underrepresented than acanth or cestode families. When we add parasite phylum as a fixed effect to the model, it is not an improvement. This reminds us that nematode families are among those most over and underrepresented in the datasets.
+
+```{r}
+mod0_phy <- update(mod0, . ~ . + parasite_phylum)
+# summary(mod0_phy)
+anova(mod0, mod0_phy)
+```
+
+Another way to visualize disproportionate representation is by looking at whether species number in the ott correlates with species number in the datasets. In general, there is a correlation - worm families with many species usually have more species in the recovery and life cycle data - but some groups are over- or underrepresented as indicated by color coding by the random effect estimate (red = overrepresented, blue = underrepresented).
+
+```{r}
+g_levx$re <- re$comb_re[match(g_levx$parasite_family, re$parasite_family)]
+
+ggplot(filter(g_levx, n_spp_ot >= n_spp),
+       aes(x = n_spp_ot, y = n_spp)) +
+  geom_abline() +
+  geom_point(alpha = 0.5, aes(color = re)) +
+  geom_smooth(method = lm) +
+  facet_wrap(~db) +
+  scale_x_continuous(trans = "log1p") +
+  scale_y_continuous(trans = "log1p") +
+  scale_color_distiller(type = "div", palette = "RdBu")
+
+g_levx <- select(g_levx, -re)
+```
+
+The distribution of the random effects is not too bad, though there is some bimodality from the many zero values (i.e. families not represented in the lcdb).
+
+```{r}
+qplot(re$comb_re)
+```
+
+Since most of the underrepresented groups in the life cycle database were taxa that were not targeted anyways, let's try limiting the analysis to the families in the life cycle database. This assumes that most families containing trophically-transmitted animal parasites have at least one representative in the database.
+
+```{r}
+fams_in_lcdb <- filter(g_levx, db == "lcdb", n_spp > 0)%>%
+  .$parasite_family
+```
+```{r}
+mod0_lc <- update(mod0alt, data = filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb))
+
+# mode fe
+fe <- fixef(mod0_lc)
+df_int2 <- data.frame(db = c("lcdb", "rr"),
+                     prop = c(boot::inv.logit( fe[1] ),
+                              boot::inv.logit( fe[1] + fe[2] )
+                              ))
+rm(fe)
+
+# model re
+re <- ranef(mod0_lc)
+re <- re$parasite_family
+re$parasite_family <- row.names(re)
+re <- re%>%
+  mutate(comb_re = (dblcdb + dbrr)/2, 
+         diff_re = dbrr - dblcdb)
+re <- left_join(re, select(g_lev, parasite_family, parasite_phylum)%>%distinct())
+```
+
+
+After excluding families not in the life cycle database, the average percent of species from a family in the database jumped from  `round(df_int$prop[1] * 100, 2)`% to `round(df_int2$prop[1] * 100, 2)`% for the life cycle database and from `round(df_int$prop[2] * 100, 2)`% to `round(df_int2$prop[2] * 100, 2)`% for the recovery rate data. The distribution of random effects also looks a little better (less bimodal).
+
+```{r}
+qplot(re$comb_re)
+```
+The most overrepresented groups are the same.
+
+```{r}
+arrange(re,desc(comb_re))%>%slice_head(n=20)
+```
+
+The 20 families most overrepresented in the recovery data compared to the life cycle database also remain the same.
+
+```{r}
+arrange(re,desc(diff_re))%>%slice_head(n=20)
+```
+
+The most underrepresented groups change, though. They are no longer predominantly nematodes. Some of the groups fit my expectations, like shark cestodes (Onchobothriidae, Eutetrarhynchidae) and herp nematodes (Cosmocercidae, Pharyngodonidae, Kathlaniidae).
+
+```{r}
+arrange(re,comb_re)%>%slice_head(n=20)
+```
+
+Adding phylum to this model is not an improvement, suggesting that nematode, cestode, and acanth families are equally under and overrepresented in the lcdb.
+
+```{r}
+mod0_lc_phy <- update(mod0_lc, . ~ . + parasite_phylum)
+anova(mod0_lc, mod0_lc_phy)
+```
+
+Here is the correlation between the number of species in the life cycle database and total species diversity, but just for families represented in the life cycle database.
+
+```{r}
+g_levx$re <- re$comb_re[match(g_levx$parasite_family, re$parasite_family)]
+
+ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb),
+       aes(x = n_spp_ot, y = n_spp)) +
+  geom_abline() +
+  geom_point(alpha = 0.5, aes(color = re)) +
+  geom_smooth(method = lm) +
+  facet_wrap(~db) +
+  scale_x_continuous(trans = "log1p") +
+  scale_y_continuous(trans = "log1p") +
+  scale_color_distiller(type = "div", palette = "RdBu")
+g_levx <- select(g_levx, -re)
+```
+
+
+## Study effort
+
+Are overrepresented families the most intensely studied? Study effort was quantified by recording the number of hits in PubMed for all the families in three datasets (ott, lcdb, and rr).
+
+```{r}
+se <- bind_rows(
+  g_lev%>%filter(n_spp_ot != 0)%>%mutate(db = "ot"),
+  g_lev%>%filter(n_spp_lcdb != 0)%>%mutate(db = "lcdb"),
+  g_lev%>%filter(n_spp_rr != 0)%>%mutate(db = "rr")
+)
+```
+
+When we plot pubmed hits for each family, we see that families in the life cycle database tend to be more intensely studied. Weirdly, though, the trend is not seen in nematodes.
+
+```{r}
+ggplot(se%>%
+         mutate(db = fct_relevel(db, c("ot", "lcdb", "rr"))),
+       aes(x = db, y = pubmed_hits+1)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(alpha = 0.3) +
+  scale_y_log10() +
+  facet_wrap(~Parasite.group)
+```
+
+The nematode pattern could be an artifact, because when we make the same plot using pubmed hits for genera, then there is a clear trend.
+
+```{r}
+gen_lev <- read.csv(file = "../../data/study_effort_genus.csv", header = TRUE)
+
+se2 <- bind_rows(
+  gen_lev%>%filter(n_spp_ot != 0)%>%mutate(db = "ot"),
+  gen_lev%>%filter(n_spp_lcdb != 0)%>%mutate(db = "lcdb"),
+  gen_lev%>%filter(n_spp_rr != 0)%>%mutate(db = "rr")
+)
+ggplot(se2%>%
+         mutate(db = fct_relevel(db, c("ot", "lcdb", "rr"))),
+       aes(x = db, y = pubmed_hits+1)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(alpha = 0.3) +
+  scale_y_log10() +
+  facet_wrap(~Parasite.group)
+```
+
+Notably, the number of hits per genus was much higher than for families, probably because genus names are mentioned more in article titles than family names, especially in the taxonomically fluid nematodes. Therefore, let's recalculate our study effort metric as the summed hits for genera in the family.
+
+```{r}
+gen_lev <- left_join(gen_lev, 
+                     select(p_tax, genus, parasite_family = family)%>%distinct(),
+                     by = c("Parasite.genus" = "genus"))
+gen_lev <- gen_lev%>%
+  group_by(parasite_family)%>%
+  summarise(pubmed_hits_gensum = sum(pubmed_hits, na.rm = T))%>%
+  ungroup()
+
+g_lev <- g_lev%>%
+  rename(pubmed_hits_fam = pubmed_hits)%>%
+  left_join(., gen_lev)
+g_levx <- g_levx%>%
+  rename(pubmed_hits_fam = pubmed_hits)%>%
+  left_join(., gen_lev)
+
+# # family-level pubmed hits and summed genus hits are correlated
+# ggplot(g_lev, aes(pubmed_hits_fam, pubmed_hits_gensum)) + geom_point() +
+#   coord_trans(y = "log1p", x = "log1p")
+```
+
+Even with this metric of study effort, the pattern in nematodes is still ambiguous.
+
+```{r}
+se <- bind_rows(
+  g_lev%>%filter(n_spp_ot != 0)%>%mutate(db = "ot"),
+  g_lev%>%filter(n_spp_lcdb != 0)%>%mutate(db = "lcdb"),
+  g_lev%>%filter(n_spp_rr != 0)%>%mutate(db = "rr")
+)
+
+ggplot(se%>%
+         mutate(db = fct_relevel(db, c("ot", "lcdb", "rr"))),
+       aes(x = db, y = pubmed_hits_gensum+1)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(alpha = 0.3) +
+  scale_y_log10() +
+  facet_wrap(~Parasite.group)
+```
+
+We would expect families with more species to have more pubmed hits than less diverse ones. Indeed, there is a correlation between study effort and species diversity. Some families, though, appear more intensely studied than we would expect from their species diversity.
+
+```{r}
+ggplot(g_lev, aes(x = n_spp_ot, y = pubmed_hits_gensum)) +
+  geom_point() +
+  scale_x_continuous(trans = "log1p") +
+  scale_y_continuous(trans = "log1p")
+```
+
+Let's again compare the datasets but with pubmed hits per species in the family. The differences are much smaller, though the most intensely studied families may be overrepresented in the recovery data. 
+
+```{r}
+ggplot(se%>%
+         mutate(db = fct_relevel(db, c("ot", "lcdb", "rr"))),
+       aes(x = db, y = (pubmed_hits_gensum)/(n_spp_ot))) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(alpha = 0.2) +
+  scale_y_continuous(trans = "log1p", breaks = c(0,1,10,100,1000)) +
+  labs(y = "pubmed hits per species") +
+  facet_wrap(~Parasite.group)
+```
+Thus, parasite families in the recovery and life cycle data are more intensely studied than an average worm family, but is at least partially due to those families being more diverse with many species to study.
+
+We test this statistically by adding study effort to our mixed model as a fixed effect. We log transform it, because there were a few families that were intensely studied and many that were little studied.
+
+
+```{r}
+# add study effort and its interaction with dataset - all families
+mod1 <- update(mod0alt, . ~ . + log(pubmed_hits_gensum + 1))
+mod1.1 <- update(mod0alt, . ~ . + log(pubmed_hits_gensum + 1)*db)
+
+# ... just families in life cycle database
+mod1_lc <- update(mod0_lc, . ~ . + log(pubmed_hits_gensum + 1))
+mod1.1_lc <- update(mod0_lc, . ~ . + log(pubmed_hits_gensum + 1)*db)
+```
+
+Adding a study effort main effect weakly improved the model, whereas there was a clearer interaction effect.
+
+```{r}
+anova(mod0alt, mod1, mod1.1)
+```
+Overall, there was a weak tendency for more intensely studied families to be better represented in both datasets, but especially the recovery dataset. 
+
+```{r}
+summary(mod1.1)
+```
+
+The interaction was still important when we limited the analysis to just the families in the life cycle database.
+
+```{r}
+anova(mod0_lc, mod1_lc, mod1.1_lc)
+```
+
+Let's plot these effects, first with all families and then with just the lcdb families. The dashed lines are the average proportion representation across all families. The life cycle database is not obviously biased towards more intensely studied families, but the recovery rate data seems to be.
+
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp),
+       aes(y = n_spp/n_spp_ot, x = pubmed_hits_gensum)) +
+  geom_point(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.7) +
+  geom_hline(data = df_int, 
+             aes(yintercept = prop),
+             linetype = "dashed") +
+  geom_smooth(se = F) +
+  facet_wrap(~db, scales = "free_y") +
+  scale_x_continuous(trans = "log1p", breaks = c(0,1,10,100,1000)) +
+  labs(y = "Proportion of species diversity in dataset",
+       title = "All families, n = 193",
+       x = "Pubmed hits",
+       size = "Species in family") +
+  theme(panel.grid.minor = element_blank())
+```
+The pattern is the same when focusing just on families in the life cycle database.
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb),
+       aes(y = n_spp/n_spp_ot, x = pubmed_hits_gensum)) +
+  geom_point(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.7) +
+  geom_hline(data = df_int2, 
+             aes(yintercept = prop),
+             linetype = "dashed") +
+  geom_smooth(se = F) +
+  facet_wrap(~db, scales = "free_y") +
+  scale_x_continuous(trans = "log1p", breaks = c(0,1,10,100,1000)) +
+  labs(y = "Proportion of species diversity in dataset",
+       title = "Families in lcdb, n = 122",
+       x = "Pubmed hits",
+       size = "Species in family") +
+  theme(panel.grid.minor = element_blank())
+```
+
+Thus, both the recovery and life cycle data tends to include families that are more intensely studied. However, only in the recovery data are more intensely studied families proportionally overrepresented.
+
+## Habitat
+
+If we focus only on families in the life cycle database, we can also examine how characteristics encoded in the lcdb, like habitat or host type, might impact representation. So, are over/underrepresented families likely to be from certain habitats? To test this, we add habitat to the model as a fixed effect.
+
+```{r}
+mod2_lc <- update(mod0_lc, . ~ . + habitat)
+mod2.1_lc <- update(mod0_lc, . ~ . + habitat*db)
+```
+
+A LRT suggests that habitat matters and that the effect is relatively consistent across datasets (no interaction).
+
+```{r}
+anova(mod0_lc, mod2_lc, mod2.1_lc)
+```
+The model parameters indicate that marine families are underrepresented.
+
+```{r}
+summary(mod2_lc, correlation = F)
+```
+Here are the families split by habitat. The dashed lines are the overall averages for each dataset.
+
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb),
+       aes(y = n_spp/n_spp_ot, x = habitat)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.7) +
+  geom_hline(data = df_int2, 
+             aes(yintercept = prop),
+             linetype = "dashed") +
+  facet_wrap(~db, scales = "free_y") +
+  labs(y = "Proportion of species diversity in dataset",
+       x = "Habitat",
+       title = "Limited to families in lcdb",
+       size = "Species in family")
+```
+
+When we revisit the most underrepresented groups, we see that the marine families are almost all cestodes. Cestodes are diverse in sharks but their life cycles are poorly known.
+
+```{r}
+re <- ranef(mod0_lc)
+re <- re$parasite_family
+re$parasite_family <- row.names(re)
+re <- re%>%
+  mutate(comb_re = (dblcdb + dbrr)/2, 
+         diff_re = dbrr - dblcdb)
+re <- left_join(re, select(g_lev, parasite_family, parasite_phylum, habitat)%>%distinct())
+arrange(re, comb_re)%>%slice_head(n=20)
+```
+
+Do habitat differences depend on the parasite group? When we add a habitat by parasite group interaction to the model, it is not better than the habitat-only model. This shouldn't be too surprising, because this cuts the data fairly thin.
+
+```{r}
+mod2.2_lc <- update(mod2.1_lc, . ~ . + parasite_phylum:habitat)
+anova(mod2.1_lc, mod2.2_lc)
+```
+We can visualize this by separating the plot by phyla. Marine families seem underrepresented regardless of group.
+
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb),
+       aes(y = n_spp/n_spp_ot, x = habitat)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.7) +
+  geom_hline(data = df_int2, 
+             aes(yintercept = prop),
+             linetype = "dashed") +
+  facet_grid(db~parasite_phylum, scales = "free") +
+  labs(y = "Proportion of species diversity in dataset",
+       x = "Habitat",
+       title = "Limited to families in lcdb",
+       size = "Species in family")
+```
+
+## Host type
+
+Are over/underrepresented families likely to infect certain kinds of final hosts? Let's add final host type (invert, bird, mammal, etc) to the model as a fixed effect.
+
+```{r}
+mod3_lc <- update(mod0_lc, . ~ . + host_type_dh)
+mod3.1_lc <- update(mod0_lc, . ~ . + host_type_dh*db)
+mod3.2_lc <- update(mod2_lc, . ~ . + host_type_dh)
+```
+
+A LRT suggests there may be a marginal effect of host type, and its effect may vary among datasets (weak interaction).
+
+```{r}
+anova(mod0_lc, mod3_lc, mod3.1_lc)
+```
+
+But that effect may overlap the habitat effect, since the LRT is weaker when adding host type to a model with habitat.
+
+```{r}
+anova(mod2_lc, mod3.2_lc)
+```
+
+The model parameters suggest herps are weakly underrepresented in the lcdb, whereas fish and mammals are under and overrepresented in the recovery data, respectively.
+
+```{r}
+summary(mod3.1_lc, correlation = F)
+```
+Here are the families split by host type. The dashed line is the overall average. No groups seem obviously over or underrepresented.
+
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb, host_type_dh != "invertebrate"),
+       aes(y = n_spp/n_spp_ot, x = host_type_dh)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.7) +
+  geom_hline(data = df_int2, 
+             aes(yintercept = prop),
+             linetype = "dashed") +
+  facet_wrap(~db, scales = "free_y") +
+  labs(y = "Proportion of species diversity in dataset",
+       x = "Final host type",
+       title = "Limited to families in lcdb",
+       size = "Species in family")
+```
+
+It is also not clear that host type differences depend on the parasite group; adding a host type by parasite group interaction to the model is not an improvement.
+
+```{r}
+mod3.3_lc <- update(mod3.1_lc, . ~ . + parasite_phylum:habitat)
+anova(mod3.1_lc, mod3.3_lc)
+```
+
+Here is the above plot separated by phyla. Any group that looks under or overrepresented includes only a few families, so there is not a clear pattern suggesting certain host types in certain helminth groups are overrepresented in the database.
+
+```{r}
+ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb, host_type_dh != "invertebrate"),
+       aes(y = n_spp/n_spp_ot, x = host_type_dh)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.7) +
+  geom_hline(data = df_int2, 
+             aes(yintercept = prop),
+             linetype = "dashed") +
+  facet_grid(db~parasite_phylum, scales = "free") +
+  labs(y = "Proportion of species diversity in dataset",
+       x = "Final host type",
+       title = "Limited to families in lcdb",
+       size = "Species in family")
+```
+
+## Conclusions - biases in life cycle database relative to known helminth diversity
+
+These analyses confirmed that there are taxonomic biases in the life cycle database and our recovery data - some groups are over or underrepresented. More intensely studied families were overrepresented in the recovery data.  Families from marine habitat were most underrepresented, which is primarily due to the diverse shark tapeworms. Mammal parasites were a bit overrepresented in the recovery data.
+
+## Plots for supplement
+
+Let's fit the same models with `MCMCglmm`, which makes it easier to extract confidence intervals for plotting, particularly for the random effects.
+
+```{r}
+library(MCMCglmm)
+```
+```{r}
+# make data for predictions
+dx <- filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb)%>%
+  mutate(pred = "no",
+         log_study = log(pubmed_hits_gensum+1))
+
+pred_study_effort <- seq(min(dx$log_study), max(dx$log_study), length.out = 50)
+dx_se <- bind_rows(
+  data.frame(db = "lcdb",
+             log_study = pred_study_effort),
+  data.frame(db = "rr",
+             log_study = pred_study_effort)
+)
+dx_se <- mutate(dx_se, parasite_family = dx$parasite_family[1], pred = "yes, se")
+
+
+dx_hab <- select(dx, db, habitat)%>%distinct()%>%
+  mutate(pred = "yes, habitat", parasite_family = dx$parasite_family[1])
+
+dx_dh <- select(dx, db, host_type_dh)%>%distinct()%>%
+  mutate(pred = "yes, dh", parasite_family = dx$parasite_family[1])
+
+dx <- bind_rows(dx, dx_se, dx_hab, dx_dh)
+rm(pred_study_effort, dx_se, dx_hab, dx_dh)
+```
+```{r}
+# fit mcmc models
+prior <- list(R = list(V = 0.1, fix = 1),
+              G = list(G1 = list(V = diag(2), nu = 2))
+              )
+mod0_mc <- MCMCglmm(cbind(n_spp, n_spp_ot-n_spp) ~ db, 
+                 random = ~ us(db):parasite_family,
+                 prior = prior,
+                 nitt = 101000, thin = 100, burnin = 1000,
+                 data = filter(dx, pred %in% c("no")),
+                 family = 'multinomial2', 
+                 pr=T, 
+                 verbose = F)
+mod1_mc <- MCMCglmm(cbind(n_spp, n_spp_ot-n_spp) ~ db * log_study, 
+                 random = ~ us(db):parasite_family,
+                 prior = prior,
+                 nitt = 101000, thin = 100, burnin = 1000,
+                 data = filter(dx, pred %in% c("no", "yes, se")),
+                 family = 'multinomial2', 
+                 pr=T, 
+                 verbose = F)
+mod2_mc <- MCMCglmm(cbind(n_spp, n_spp_ot-n_spp) ~ db * habitat, 
+                 random = ~ us(db):parasite_family,
+                 prior = prior,
+                 nitt = 101000, thin = 100, burnin = 1000,
+                 data = filter(dx, pred %in% c("no", "yes, habitat")),
+                 family = 'multinomial2', 
+                 pr=T, 
+                 verbose = F)
+mod3_mc <- MCMCglmm(cbind(n_spp, n_spp_ot-n_spp) ~ db * host_type_dh, 
+                 random = ~ us(db):parasite_family,
+                 prior = prior,
+                 nitt = 101000, thin = 100, burnin = 1000,
+                 data = filter(dx, pred %in% c("no", "yes, dh")),
+                 family = 'multinomial2', 
+                 pr=T, 
+                 verbose = F)
+
+```
+
+After fitting models, we get predictions and start plotting. On the plots, blue represents the model predictions. We first plot the families most over and underrepresented in our comparative datasets.
+
+```{r}
+# predictions for average family
+p_m0 <- predict.MCMCglmm(mod0_mc, 
+             type = 'terms',
+             interval = 'confidence')
+p_m0 <- boot::inv.logit(p_m0) # convert to proportions
+p_m0 <- cbind(filter(dx, pred %in% c("no")), p_m0)
+```
+```{r}
+#predictions at family level
+p <- predict.MCMCglmm(mod0_mc, 
+             type = 'terms',
+             interval = 'confidence',
+             marginal = NULL)
+p <- boot::inv.logit(p) # convert to proportions
+p <- cbind(filter(dx, pred %in% c("no")), p)
+
+# families that are most over and underrepresented
+pfams1 <- p%>%
+  group_by(db)%>%
+  slice_min(n = 20, fit)%>%
+  ungroup()%>%
+  select(parasite_family)%>%distinct()%>%
+  .$parasite_family
+pfams2 <- p%>%
+  group_by(db)%>%
+  slice_max(n = 20, fit)%>%
+  ungroup()%>%
+  select(parasite_family)%>%distinct()%>%
+  .$parasite_family
+pfams <- unique(c(pfams1, pfams2))
+
+p <- mutate(p, parasite_family = fct_reorder(parasite_family, fit),
+            parasite_phylum = gsub("Platyhelminthes", "Cestoda", parasite_phylum) )
+```
+
+Here are the overrepresented taxa.
+
+```{r}
+db_lab <- c(lcdb = "Life cycle data", rr = "Recovery data")
+fa <- ggplot(p%>%
+         filter(parasite_family %in% pfams2),
+       aes(x = parasite_family, y = fit)) +
+  geom_linerange(aes(ymin = lwr, ymax = upr)) +
+  geom_point(aes(shape = parasite_phylum), color = "blue") +
+  geom_hline(data = p_m0%>%select(db,fit)%>%distinct(), 
+             aes(yintercept = fit), orientation = "x",
+             linetype = "dashed") +
+  facet_wrap(~db, scales = 'free_x', 
+             labeller = labeller(db = db_lab)) +
+  labs(y = "Proportion of total diversity in data", shape = NULL) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank(),
+        legend.position = c(0.85,0.15),
+        legend.background = element_rect(color = "black"),
+        axis.title.y = element_blank())
+fa
+```
+Here are the underrepresented taxa.
+
+```{r}
+fb <- ggplot(p%>%
+         filter(parasite_family %in% pfams1),
+       aes(x = parasite_family, y = fit)) +
+  geom_linerange(aes(ymin = lwr, ymax = upr)) +
+  geom_point(aes(shape = parasite_phylum), color = "blue") +
+  geom_hline(data = p_m0%>%select(db,fit)%>%distinct(), 
+             aes(yintercept = fit),
+             linetype = "dashed") +
+  facet_wrap(~db, scales = 'free_x', 
+             labeller = labeller(db = db_lab)) +
+  labs(y = "Proportion of total diversity in data", shape = NULL) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank(),
+        legend.position = c(0.9,0.175),
+        legend.background = element_rect(color = "black"),
+        axis.title.y = element_blank())
+fb
+```
+```{r}
+fab <- cowplot::plot_grid(fa + 
+                            guides(shape = F) +
+                            theme(axis.title.x = element_blank()),
+                          fb +
+                            theme(strip.background = element_blank(),
+                                  strip.text = element_blank()), 
+                          ncol = 1, 
+                          align = "v")
+ggsave(fab, filename ="../../figs/fig_s1.png", width = 9, height = 7)
+ggsave(fab, filename ="../../figs/fig_s1.svg", width = 9, height = 7)
+```
+
+Now we go through our predictors for whether a family is over or underrepresented, starting with study effort. The blue area is the predicted credible interval. 
+
+```{r}
+p <- predict.MCMCglmm(mod1_mc, 
+             type = 'terms',
+             interval = 'confidence')
+p <- boot::inv.logit(p) # convert to proportions
+p <- cbind(filter(dx, pred %in% c("no", "yes, se")), p)
+p <- filter(p, pred == "yes, se")
+```
+```{r}
+fc <- ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb)%>%
+         filter( !(db == "rr" &  n_spp/n_spp_ot > 0.3) ),
+       aes(y = n_spp/n_spp_ot, x = pubmed_hits_gensum)) +
+  geom_point(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.25) +
+  geom_ribbon(data = p,
+              aes(x = exp(log_study)-1, ymin = lwr, ymax = upr),
+              fill = "blue", alpha = 0.3) +
+  geom_line(data = p,
+            aes(x = exp(log_study)-1, y = fit),
+            color = "blue") +
+  geom_hline(data = p_m0%>%select(db,fit)%>%distinct(), 
+             aes(yintercept = fit),
+             linetype = "dashed") +
+  facet_wrap(~db, scales = 'free_y', 
+             labeller = labeller(db = db_lab)) +
+  scale_x_continuous(trans = "log1p", breaks = c(0,1,10,100,1000)) +
+  labs(y = "Proportion of familial diversity in data",
+       x = "Pubmed hits for genera in family",
+       size = "Species in\nfamily") +
+  theme(panel.grid.minor = element_blank(),
+        legend.position = c(0.625, 0.625),
+        legend.background = element_rect(color = "black"))
+fc
+```
+Here are the predictions as a function of habitat...
+```{r}
+p <- predict.MCMCglmm(mod2_mc, 
+             type = 'terms',
+             interval = 'confidence')
+p <- boot::inv.logit(p) # convert to proportions
+p <- cbind(filter(dx, pred %in% c("no", "yes, habitat")), p)
+p <- filter(p, pred == "yes, habitat")
+```
+```{r}
+fd <- ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb)%>%
+         filter( !(db == "rr" &  n_spp/n_spp_ot > 0.3) )%>%
+         mutate(habitat = fct_relevel(habitat, c("marine", "freshwater", "terrestrial", "mixed"))),
+       aes(y = n_spp/n_spp_ot, x = habitat)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.25) +
+  geom_pointrange(data = p,
+                  aes(x = habitat, y = fit, ymin = lwr, ymax = upr),
+                  color = "blue", size = 1.5, shape = 18) +
+  geom_hline(data = p_m0%>%select(db,fit)%>%distinct(), 
+             aes(yintercept = fit),
+             linetype = "dashed") +
+  facet_wrap(~db, scales = 'free_y', 
+             labeller = labeller(db = db_lab)) +
+  labs(y = "Proportion of familial diversity in data",
+       x = NULL,
+       size = "Species in\nfamily") +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.position = c(0.6, 0.5),
+        legend.background = element_rect(color = "black"))
+fd
+```
+...and as a function of host type.
+```{r}
+p <- predict.MCMCglmm(mod3_mc, 
+             type = 'terms',
+             interval = 'confidence')
+p <- boot::inv.logit(p) # convert to proportions
+p <- cbind(filter(dx, pred %in% c("no", "yes, dh")), p)
+p <- filter(p, pred == "yes, dh")
+```
+```{r}
+fe <- ggplot(filter(g_levx, n_spp_ot >= n_spp, parasite_family %in% fams_in_lcdb, host_type_dh != "invertebrate")%>%
+         filter( !(db == "rr" &  n_spp/n_spp_ot > 0.3) )%>%
+         mutate(host_type_dh = fct_relevel(host_type_dh, c("fish", "herptile", "bird", "mammal", "mixed"))),
+       aes(y = n_spp/n_spp_ot, x = host_type_dh)) +
+  geom_boxplot(outlier.color = NA) +
+  geom_jitter(aes(size = n_spp_ot),
+              width = 0.3, alpha = 0.25) +
+  geom_pointrange(data = p%>%filter(host_type_dh != "invertebrate"),
+                  aes(x = host_type_dh, y = fit, ymin = lwr, ymax = upr),
+                  color = "blue", size = 1.5, shape = 18) +
+  geom_hline(data = p_m0%>%select(db,fit)%>%distinct(), 
+             aes(yintercept = fit),
+             linetype = "dashed") +
+  facet_wrap(~db, scales = 'free_y', 
+             labeller = labeller(db = db_lab)) +
+  labs(y = "Proportion of familial diversity in data",
+       x = NULL,
+       size = "Species in family") +
+  guides(size = F) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank())
+fe
+```
+```{r}
+fcde <- cowplot::plot_grid(fc + 
+                            guides(size = F),
+                          fd +
+                            theme(strip.background = element_blank(),
+                                  strip.text = element_blank()),
+                          fe +
+                            guides(size = F) +
+                            theme(strip.background = element_blank(),
+                                  strip.text = element_blank()),
+                          ncol = 1, 
+                          align = "v")
+
+ggsave(fcde, filename ="../../figs/fig_s2.png", width = 9, height = 10)
+ggsave(fcde, filename ="../../figs/fig_s2.svg", width = 9, height = 10)
+```
+
+```{r}
+save.image(file = "tax_bias_output.RData")
+```
+

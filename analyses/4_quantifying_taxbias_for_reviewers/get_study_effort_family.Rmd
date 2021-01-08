@@ -1,0 +1,149 @@
+---
+title: "Get study effort"
+output: 
+  github_document:
+    toc: true
+    df_print: kable
+---
+
+I want to assess taxonomic bias in the recovery rate dataset. Are species in that dataset more intensely studied? 
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(rentrez)
+library(ape)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+
+I import three datasets: (i) open tree taxonomy for acanths, cestodes, and nematodes, (ii) life cycle database, and (iii) recovery rate dataset. We want to extract all genera from these data and then download the study effort. In this way, we can compare whether the groups make up some datasets have been more intensely studied than others.
+
+```{r importdata}
+# import LCDB
+dat_host <- read.csv(file = "../../data/CLC_database_hosts.csv", header = TRUE)
+dat_lh <- read.csv(file = "../../data/CLC_database_lifehistory.csv", header = TRUE)
+# import recovery rate data
+dat <- read.csv(file = "../../data/er_combined.csv", header = T)
+# import taxonomy
+ac <- read.csv(file = "../../data/acanth_taxonomy.csv", header = T)
+ce <- read.csv(file = "../../data/cest_taxonomy.csv", header = T)
+ne <- read.csv(file = "../../data/nem_taxonomy_rotl.csv", header = T)
+p_tax <- bind_rows(ac, ce, ne)
+```
+```{r}
+# combine datasets, retaining species, worm group, and data source
+spp <- bind_rows(
+  select(dat_host, Parasite.species, Parasite.group)%>%mutate(db = "lcdb"),
+  select(dat_lh, Parasite.species, Parasite.group)%>%mutate(db = "lcdb"),
+  select(dat, Parasite.species = Species, Parasite_Group)%>%
+    mutate(Parasite.group = tolower(Parasite_Group), db = "rr"),
+  select(ac, Parasite.species = species)%>%mutate(Parasite.group = "acanthocephalan", db = "ot"),
+  select(ce, Parasite.species = species)%>%mutate(Parasite.group = "cestode", db = "ot"),
+  select(ne, Parasite.species = species)%>%mutate(Parasite.group = "nematode", db = "ot")
+)%>%
+  select(Parasite.species, Parasite.group, db)%>%
+  distinct()
+spp$Parasite.species[which(spp$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
+
+spp <- spp%>%
+   mutate(Parasite.genus = substr(Parasite.species, start = 1, stop = regexpr(" ", Parasite.species)-1))
+
+spp <- left_join(spp, 
+                 select(p_tax, genus, parasite_family = family, parasite_order = order)%>%distinct(), 
+                 by = c("Parasite.genus" = "genus"))
+```
+
+```{r}
+# make family-level db
+g_lev <- spp%>%
+  filter(parasite_family != "")%>%
+  group_by(parasite_family, Parasite.group, db)%>%
+  summarise(n_spp = n())%>%
+  ungroup()%>%
+  pivot_wider(names_from = "db", values_from = n_spp, names_prefix = "n_spp_")%>%
+  mutate(across(starts_with("n_spp_"), function(x){ifelse(is.na(x), 0, x)}))
+```
+
+For every unique genus in the data, we query pubmed and extract the number of publication "hits". This is a measure of study effort. As a control, we compare this to the number of studies for a genus in the life cycle database.
+
+```{r}
+# Number of unique publications in life cycle database
+dat_host <- mutate(dat_host, publication = paste(Author, Year, Journal, Volume, Pages)) # creat publication variable
+dat_lh <- mutate(dat_lh, publication = paste(Author, Year, Journal, Volume, Pages))
+
+dat_hosts_pub <- filter(dat_host, !is.na(Author), !is.na(Year), !is.na(Journal))%>%
+  left_join(., select(p_tax, genus, parasite_family = family, parasite_order = order)%>%distinct(), 
+                 by = c("Parasite.genus" = "genus"))%>%
+  select(parasite_family, publication)%>%
+  distinct()
+dat_lh_pub <- filter(dat_lh, !is.na(Author), !is.na(Year), !is.na(Journal))%>%
+  left_join(., select(p_tax, genus, parasite_family = family, parasite_order = order)%>%distinct(), 
+                 by = c("Parasite.genus" = "genus"))%>%
+  select(parasite_family, publication)%>%
+  distinct()
+
+study_effort <- bind_rows(dat_hosts_pub, dat_lh_pub)%>%arrange(parasite_family, publication)%>%distinct()
+
+study_effort <- group_by(study_effort, parasite_family)%>%
+  summarise(n_pubs_lcdb = n())
+```
+
+```{r}
+g_lev <- left_join(g_lev, study_effort)
+```
+
+For querying PubMed, we create Entrez queries like so: "parasite genus[ALL] AND parasite group[All]". We include parasite group so that the query does not return hits on non-helminth groups.
+
+```{r}
+# make queries for genus name plus parasite group
+g_lev <- g_lev%>%
+  mutate(p_g_wc = if_else(Parasite.group == 'nematode', 'nematod*', 
+                          if_else(Parasite.group == 'cestode', 'cestod*', 'acanthocephala*')))%>%
+  mutate(query = paste0(parasite_family, '[ALL] AND ', p_g_wc, '[ALL]'))%>%
+  select(-p_g_wc)
+query_gen_name_group <- g_lev$query
+```
+
+```{r}
+for(query in query_gen_name_group){
+  # search
+  search_res <- entrez_search(db = "pubmed", term = query)
+  # report hits
+  num_hits <- search_res$count
+  print(paste(num_hits, "hits for", query))
+  
+  if(query == query_gen_name_group[1]){
+    pubmed_hits2 <- num_hits
+  } else {
+    pubmed_hits2 <- c(pubmed_hits2, num_hits)
+  }
+}
+```
+
+```{r}
+g_lev <- left_join(g_lev, data.frame(query = query_gen_name_group,
+                              pubmed_hits = pubmed_hits2)
+)
+
+```
+
+Here is the distribution of pubmed hits based on genus name + parasite group. It is skewed, even on a log scale
+
+```{r}
+ggplot(g_lev, aes(x = pubmed_hits+1)) + geom_histogram() + scale_x_log10()
+```
+
+Are the number of pubmed hits correlated with the number of publications on a given family in the life cycle database? It is, but it is noisy, which is not too surprising, as I was not trying to be exhaustive when compiling the database.
+
+```{r}
+ggplot(g_lev, aes(x = n_pubs_lcdb, y = pubmed_hits)) + 
+  geom_point(alpha = 0.2) + 
+  geom_smooth() +
+  scale_y_continuous(trans = "log1p") + scale_x_continuous(trans = "log1p")
+```
+
+```{r}
+write.csv(g_lev, file = "../../data/study_effort_family.csv", row.names = F)
+```
+
