@@ -17,7 +17,7 @@ Here, I combine Spencer's establishment rate data with other data (worm size, ho
 # Wrangling
 
 ```{r}
-dat <- read.csv(file = "data/compiled_exp_infs_201020.csv", header = T)
+dat <- read.csv(file = "../../data/compiled_exp_infs_201020.csv", header = T)
 ```
 
 How many parasite species?
@@ -62,10 +62,10 @@ filter(dat, Recovered %% 1 != 0)%>%
 Let's add in the lcdb !
 
 ```{r, message=FALSE, warning=FALSE}
-lcdb_hosts <- read.csv(file = "data/CLC_database_hosts.csv", header = T)
-lcdb_lh <- read.csv(file="data/CLC_database_lifehistory.csv", header = TRUE, sep=",")
-tree <- read.tree(file = "data/full_tree_time_calib.nex")
-tips <- read.csv(file = "data/data_tree_tips_table.csv")
+lcdb_hosts <- read.csv(file = "../../data/CLC_database_hosts.csv", header = T)
+lcdb_lh <- read.csv(file="../../data/CLC_database_lifehistory.csv", header = TRUE, sep=",")
+tree <- read.tree(file = "../../data/full_tree_time_calib.nex")
+tips <- read.csv(file = "../../data/data_tree_tips_table.csv")
 ```
 ```{r}
 lcdb_lh <- left_join(lcdb_lh, tips)
@@ -265,7 +265,7 @@ dat$to_int_def[which(dat$Species == "Toxocara cati" & dat$Host_Species == "Felis
 Now let's add host size
 
 ```{r}
-hs <- read.csv(file = "data/host_size_combined.csv")
+hs <- read.csv(file = "../../data/host_size_combined.csv")
 ```
 
 Correct some misspelled names.
@@ -355,7 +355,7 @@ stages_missing_biov <- unique(stages_missing_biov)
 ```
 
 ```{r}
-stages <- read.csv("../lcl_host_types/data/imputed_stage_level_tables/stage_level_combined_bestimputed.csv", header = T)
+stages <- read.csv("../../../lcl_host_types/data/imputed_stage_level_tables/stage_level_combined_bestimputed.csv", header = T)
 stages$Parasite.species[which(stages$Parasite.species == "Mesocestoides corti/variabilis/vogae")] <- "Mesocestoides corti"
 stages$Parasite.species[which(stages$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
 stages$Parasite.species[which(stages$Parasite.species == "Macracanthorhynchus hirudinaceous")] <- "Macracanthorhynchus hirudinaceus"
@@ -434,6 +434,8 @@ dat <- dat%>%
 Write combined data table to csv.
 
 ```{r}
-write.csv(dat, file = "data/er_combined.csv", row.names = F)
+# write.csv(dat, file = "data/er_combined.csv", row.names = F)
 ```
+
+
 

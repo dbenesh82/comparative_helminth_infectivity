@@ -495,6 +495,30 @@ Proportion without host or parasite size
 sum(is.na(datx$log_hm) | is.na(datx$log_ws))/length(datx$log_hm)
 ```
 
+```{r}
+# add host tax
+datx <- mutate(datx, host_genus = substr(Host_Species, start = 1, stop = regexpr(" ", Host_Species)-1))
+
+host_tax <- read.csv(file = "../../../lcl_host_types/data/ncbi_fishbase_eol_tax_combined.csv", header = T)
+datx <- left_join(datx,
+          select(host_tax, host_genus = genus, host_class = class)%>%distinct(),
+          by = "host_genus")
+ht <- data.frame(host_class = unique(datx$host_class),
+                 host_type1 = c("mollusc", "mammal", "fish", "terr arth", "bird", "crustacean",
+                                "crustacean", "annelid", "amphibian", "terr arth"))
+ht <- ht%>%
+  filter(!is.na(host_type1))%>%
+  mutate(host_type2 = if_else(host_type1 %in% c("terr arth", "crustacean", "mollusc", "annelid"), "invertebrate",
+                              if_else(host_type1 %in% c("reptile", "amphibian"), "herp", host_type1)))
+datx <- left_join(datx, ht)
+
+datx%>%
+  group_by(host_type2)%>%
+  summarize(number_exp_hosts = sum(n_hosts))
+
+rm(ht, host_tax)
+```
+
 
 ## Weights
 
@@ -1215,7 +1239,52 @@ Since dose is incorporated into the response variable and since it probably does
 
 Now let's add phylogeny into the model. We fit `MCMCglmm` models because it can incorporate phylogeny as random effects (phylogenetic covariance matrix). We want to assess whether phylogeny accounts for variation beyond study, since studies are usually on one species or a few closely related species. 
 
-We'll add phylogeny three ways: 1) by itself, 2) to a model with just the study effect, and 3) to a model with study and the main fixed effects. This tests whether phylogeny explains variation alone, beyond study, and beyond life cycle characteristics, respectively. 
+But first, let's compare the 3 major helminth groups to see if the main trends (shown later) are robust across taxa.
+
+```{r}
+datx<-left_join(datx, 
+                select(dat, Species, parasite_genus, parasite_family,
+                       parasite_order, parasite_class, parasite_phylum)%>%distinct())
+```
+
+Recovery increases with life cycle progression, though in acanths and cestodes establishment in the third host is not necessarily better than in the second host.
+
+```{r}
+ggplot(filter(datx, !is.na(log_ws), !is.na(log_hm)),
+       aes(x = nh_fac, y = Recovery_Rate, color = nh_fac)) + 
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(alpha = 0.2) +
+  facet_wrap(~parasite_phylum) +
+  scale_color_brewer(palette = "Dark2", direction = -1) + 
+  guides(color = FALSE) +
+  labs(x = "host in cycle")
+```
+In all groups, establishment increases with worm size.
+
+```{r}
+ggplot(filter(datx, !is.na(log_ws), !is.na(log_hm)),
+       aes(x = log_ws, y = Recovery_Rate)) + 
+  geom_point(alpha = 0.2, aes(color = nh_fac)) + 
+  geom_smooth(se = T, method = lm, color = "black") +
+  scale_color_brewer(palette = "Dark2", direction = -1) + 
+  guides(color = FALSE) +
+  labs(x = "Log worm size") +
+  facet_wrap(~parasite_phylum)
+```
+And there was a weak tendency for establishment to decrease with host size within life stages but not across them.
+
+```{r}
+ggplot(filter(datx, !is.na(log_ws), !is.na(log_hm)),
+       aes(x = log_hm, y = Recovery_Rate, color = nh_fac)) + 
+  geom_point(alpha = 0.2) + 
+  geom_smooth(se = T, method = lm) +
+  scale_color_brewer(palette = "Dark2", direction = -1) + 
+  guides(color = FALSE) +
+  labs(x = "Log host size") +
+  facet_wrap(~parasite_phylum)
+```
+
+So it does not look like there are big effects at the highest taxonomic level. Now we'll add phylogeny to the model three ways: 1) by itself, 2) to a model with just the study effect, and 3) to a model with study and the main fixed effects. This tests whether phylogeny explains variation alone, beyond study, and beyond life cycle characteristics, respectively. 
 
 ```{r}
 final.tree<-makeNodeLabel(tree) # standardize node labels
@@ -1265,7 +1334,7 @@ modp_rs <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi,
 startc <- list(R = as.numeric(lme4::VarCorr(m2_rs0)["obs"][[1]]),
                G = list(G1 = rs),
                QUASI = FALSE)
-mod_rs_fe <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + nh_fac * to_int_def + log_ws + log_hm, 
+mod_rs_fe <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + nh_fac + log_ws + log_hm, 
                  random = ~ us(1+log_dpi):study_rs,
                  prior = priorRS,
                  start = startc,
@@ -1278,7 +1347,7 @@ startc <- list(R = as.numeric(lme4::VarCorr(m2_rs0)["obs"][[1]]),
                G = list(G1 = rs,
                         G2 = rs[1]),
                QUASI = FALSE)
-modp_rs_fe <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + nh_fac * to_int_def + log_ws + log_hm, 
+modp_rs_fe <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + nh_fac + log_ws + log_hm, 
                  random = ~ us(1+log_dpi):study_rs + tree_tips,
                  prior = priorRSP,
                  start = startc,
@@ -1324,7 +1393,142 @@ plot(modp_rs$VCV[,"tree_tips"])
 plot(modp_rs_fe$VCV[,"tree_tips"])
 ```
 
-The phylogenetic effect competes with the study effect - when we add phylogeny to a model with just study (random intercept) their variance components are negatively correlated (not shown). This makes sense. A given study usually focused on a single parasite species, so phylogeny and study should explain some of the same variation.
+The phylogenetic effect competes with the study effect - when we add phylogeny to a model with just study (random intercept) their variance components are negatively correlated (not shown). This makes sense. A given study usually focused on a single parasite species, so phylogeny and study should explain some of the same variation. 
+
+One way to check this is to see whether 1 study corresponds to 1 species.
+
+```{r}
+dp <- datx%>%
+  group_by(Species)%>%
+  summarise(n_studies = n_distinct(Study))%>%
+  arrange(desc(n_studies))
+ # round(sum(dp$n_studies == 1)/length(dp$n_studies) * 100, 1)
+```
+
+Most species (`r round(sum(dp$n_studies == 1)/length(dp$n_studies) * 100, 1)`%) were represented by a single study, but for `r sum(dp$n_studies > 1)` species, recovery rates were obtained from multiple studies.
+
+```{r}
+dp2 <- datx%>%
+  group_by(Species, nh_fac)%>%
+  summarise(n_studies = n_distinct(Study))%>%
+  arrange(desc(n_studies))
+# dp2
+# round(sum(dp2$n_studies == 1)/length(dp2$n_studies) * 100, 1)
+```
+
+An even higher percent of life stages (`r round(sum(dp2$n_studies == 1)/length(dp2$n_studies) * 100, 1)`%) were represented by a single study, suggesting some species have multiple studies in the data because the different studies cover different life stages.
+
+Therefore, we would expect models that use species as the random effect to be very comparable to models with study as the random effect. To check, we fit models with just a study or species random effect (no fixed effects) and then calculate how much variation is explained by each.
+```{r}
+datx <- datx%>%
+  mutate(spst = paste(Species, nh_fac))
+```
+```{r}
+m1 <- glmer(cbind(succeeded, failed) ~ 1 + (1 | study_rs) + (1|obs),
+            data = filter(datx, !is.na(log_ws), !is.na(log_hm)),
+            family = "binomial")
+m2 <- update(m1, . ~ . + (1|Species) - (1 | study_rs))
+m2.1 <- update(m1, . ~ . + (1|spst) - (1 | study_rs))
+m3 <- update(m1, . ~ . + (1|Species))
+m3.1 <- update(m1, . ~ . + (1|spst))
+```
+
+Study alone explained more variation than species alone.
+
+```{r}
+Sigma <- VarCorr(m1)
+cat("Variance explained by study:", round(Sigma$study_rs/(Sigma$study_rs + Sigma$obs + pi^2/3) , 2),"\n" )
+Sigma <- VarCorr(m2)
+cat("Variance explained by species:", round(Sigma$Species/(Sigma$Species + Sigma$obs + pi^2/3) , 2) )
+```
+This makes sense because different stages from the same species can have quite different establishment rates and experiments with different stages are usually from different studies. When we use the combination of species and stage, the variance explained increases, but it is still less than study alone.
+
+```{r}
+Sigma <- VarCorr(m2.1)
+cat("Variance explained by species-stage:", round( (Sigma$spst)/(Sigma$spst + Sigma$obs + pi^2/3) , 2) )
+```
+When we add species or species-stage to the study-only model, the explained variance increases only slightly, suggesting species does not explain much variation beyond that accounted for by study.
+
+```{r}
+Sigma <- VarCorr(m3)
+cat("Variance explained by study and species together:",
+    round( (Sigma$Species + Sigma$study_rs)/
+             (Sigma$Species + Sigma$study_rs + Sigma$obs + pi^2/3) , 2),"\n" )
+Sigma <- VarCorr(m3.1)
+cat("Variance explained by study and species-stage together:",
+    round( (Sigma$spst + Sigma$study_rs)/
+             (Sigma$spst + Sigma$study_rs + Sigma$obs + pi^2/3) , 2) )
+```
+Surprisingly, though, the likelihood ratio test comparing a "study" model and a "study + species-stage" model was significant, suggesting that the multiple studies from a given species might be consistent. 
+
+```{r}
+anova(m1,m3.1)
+```
+Here is an attempt to plot this result. The plot shows the life stages, for which there were multiple studies in the data. The smaller black points are the recovery rates from within each study (e.g., different time points post infection), whereas the larger blue points are the average recovery rate for a study. Sometimes the points cluster (indicating a species identity effect) but sometimes they do not (implying a study effect).
+
+```{r}
+spp_mult <- datx%>%
+  group_by(spst)%>%
+  summarise(n_studies = n_distinct(Study))%>%
+  arrange(desc(n_studies))%>%
+  filter(n_studies > 1)%>%
+  .$spst
+dp3 <- datx%>%
+  filter(spst %in% spp_mult)%>%
+  group_by(spst, study_rs)%>%
+  summarise(Recovery_Rate = mean(Recovery_Rate))
+ggplot(filter(datx, spst %in% spp_mult)%>%
+         mutate(spst = fct_reorder(spst, Recovery_Rate)),
+       aes(x = spst, y = Recovery_Rate)) + 
+  geom_point(size = 1) +
+  geom_point(data = dp3, color = "blue", size = 2.5, alpha = 0.5) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(x = NULL, y = "Recovery rate")
+```
+
+Some of the similarity among life stages across studies is probably due to a stage's characteristics, like parasite size and host size. Therefore, let's again add species, but now to a model with fixed effects like time post infection, stage, worm size, and host size.
+
+```{r}
+m1_fe <- glmer(cbind(succeeded, failed) ~ log_dpi + nh_fac * to_int_def + log_ws + log_hm +
+              (1 | study_rs) + (1|obs),
+            data = filter(datx, !is.na(log_ws), !is.na(log_hm)),
+            family = "binomial")
+m3_fe.1 <- update(m1_fe, . ~ . + (1|spst))
+```
+
+As before, species identity does not explain much (residual) variation beyond stage.
+
+```{r}
+Sigma <- VarCorr(m1_fe)
+cat("Variance explained by study:", round(Sigma$study_rs/(Sigma$study_rs + Sigma$obs + pi^2/3) , 2),"\n" )
+Sigma <- VarCorr(m3_fe.1)
+cat("Variance explained by study and species-stage together:",
+    round( (Sigma$spst + Sigma$study_rs)/
+             (Sigma$spst + Sigma$study_rs + Sigma$obs + pi^2/3) , 2) )
+```
+Yet adding it still improves the model slightly.
+
+```{r}
+anova(m1_fe,m3_fe.1)
+```
+We would expect fixed effects to explain some of the differences between species, so we expect the variance component for species to decrease. Indeed it does.
+
+```{r}
+Sigma <- VarCorr(m3.1)
+Sigma2 <- VarCorr(m3_fe.1)
+cat("Variance component for species-stage without fixed effects:", round(Sigma$spst, 3),"\n" ,
+    "Variance component for species-stage with fixed effects:", round(Sigma2$spst, 3),"\n",
+    "Percent decrease:", round(1 - Sigma2$spst/Sigma$spst, 2))
+```
+By contrast, the study effect decreased much less.
+
+```{r}
+cat("Variance component for study without fixed effects:", round(Sigma$study_rs, 3),"\n",
+    "Variance component for study with fixed effects:", round(Sigma2$study_rs, 3),"\n",
+    "Percent decrease:", round(1 - Sigma2$study_rs/Sigma$study_rs, 2))
+```
+Thus, much of the consistency in establishment across studies for a given species is explained by things like host number, worm size, etc. We should keep this in mind for the phylogenetic models, which also include 'species' as the tips of the phylogeny. Returning to the phylogenetic models...
 
 Let's compare R^2^ values for the models with and without phylogeny.
 
@@ -1491,11 +1695,6 @@ I would not actually predict a strong phylogenetic effect, because different lif
 Since "study" and "species" overlap substantially, maybe we should just look at higher taxonomic levels. Since studies usually focus on the same species, maybe we can detect taxonomic/phyla effects by looking at whether e.g. parasite families have similar recovery rates across studies. To test this, we replace parasite phylogeny with taxonomy in the model, but only the higher taxonomic levels (i.e. phylum, class, order, and family - presumably those levels won't overlap much with the study effect). 
 
 ```{r}
-datx<-left_join(datx, 
-                select(dat, Species, parasite_genus, parasite_family,
-                       parasite_order, parasite_class, parasite_phylum)%>%distinct())
-```
-```{r}
 start_tax <- list(R = as.numeric(lme4::VarCorr(m2_rs0)["obs"][[1]]),
                   G = list(G1 = rs,
                            G2 = rs[1]/4,
@@ -1512,7 +1711,7 @@ prior_tax <- list(R=list(V=1, nu=0.002),
                       G5=list(V=1, nu = 1, alpha.mu = 0, alpha.V = 1000))) # parameter expanded prior for tax effect
                       # G2=list(V=1, nu=0.002)))
 
-modpt <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + nh_fac * to_int_def + log_ws + log_hm, 
+modpt <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + nh_fac + log_ws + log_hm, 
                  random = ~ us(1+log_dpi):study_rs +
                    parasite_phylum + parasite_class + parasite_order + parasite_family,
                  prior = prior_tax,
@@ -1620,11 +1819,44 @@ ggplot(filter(dat, !is.na(biovolume), !is.na(host_bm))%>%
 What about the fixed effects? Are they the same with or without a phylogenetic random effect? They are rather tightly correlated, suggesting that a model with or without phylogeny will not impact the conclusions.
 
 ```{r}
-qplot(summary(mod_rs_fe)$solutions[,1], summary(modp_rs_fe)$solutions[,1]) +
-  geom_abline(slope = 1, intercept = 0) +
-  geom_label(aes(label = names(summary(mod_rs_fe)$solutions[,1]))) +
-  geom_point() +
-  labs(x = "Parameter estimates, non-phylogenetic model", y = "Parameter estimates, phylogenetic model")
+sfix <- data.frame(summary(mod_rs_fe)$solutions[,1:5])
+sfix$param <- row.names(sfix)
+sfix$ds <- "study alone"
+tfix <- data.frame(summary(modpt)$solutions[,1:5])
+tfix$param <- row.names(tfix)
+tfix$ds <- "study +\ntaxonomy"
+pfix <- data.frame(summary(modp_rs_fe)$solutions[,1:5])
+pfix$param <- row.names(pfix)
+pfix$ds <- "study +\nphylogeny"
+df_comp <- bind_rows(sfix, tfix, pfix)
+df_comp <- mutate(df_comp,
+                  ds = fct_relevel(ds, c("study alone", "study +\ntaxonomy", "study +\nphylogeny")),
+                  param = factor(param, labels = c("host 1\n(intercept)",
+                             "days post infection", "host mass", "worm size",
+                             "host 1 vs 2", "host 1 vs 3"))
+                  )%>%
+  mutate(param = fct_relevel(param, c("host 1\n(intercept)", "host 1 vs 2", "host 1 vs 3",
+                                      "days post infection", "host mass", "worm size")
+                             )
+         )
+
+rm(sfix, tfix, pfix)
+```
+```{r}
+s4 <- ggplot(data=df_comp) +
+  geom_blank(aes(x = ds, y = post.mean)) +
+  # geom_ribbon(aes(x = as.numeric(ds), ymin = l.95..CI, ymax = u.95..CI),
+  #             alpha = 0.5, fill = "blue") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_pointrange(aes(x = ds, y = post.mean, ymin = l.95..CI, ymax = u.95..CI, shape = ds),
+                  color = "blue") +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.text.x = element_blank()) +
+  labs(x = "Model", y = "Parameter estimates", shape = NULL) +
+  facet_wrap(~param, scales = "free")
+s4
+ggsave(s4, filename = "../../figs/figS4.png", width = 7, height = 5)
 ```
 
 So, phylogeny does not have a clear effect on recovery, at least independent from study effects. Since phylogeny (1) does not affect the fixed effects, (2) is hard to estimate, and (3) intuitively should be low in this dataset, we leave it out of the main analysis.
@@ -1978,7 +2210,15 @@ ggplot(datx,
 Thus, this term needs to be disentangled from our next model predictor, worm size. But before moving onto that, let's make a manuscript figure.
 
 ```{r}
-f2 <- ggplot(datx,
+# number of species in each group
+p <- left_join(p,
+               dx%>%
+                 filter(is.na(pred))%>%
+                 group_by(nh_fac, to_int_def)%>%
+                 summarize(n_sp = n_distinct(Species)))
+```
+```{r}
+f2 <- ggplot(filter(dx, is.na(pred)),
        aes(y = Recovery_Rate, x = nh_fac, shape = to_int_def)) +
   geom_boxplot(outlier.colour = NA) +
   geom_point(
@@ -1989,7 +2229,12 @@ f2 <- ggplot(datx,
                   aes(x = nh_fac, shape = to_int_def, y = fit, ymin = lwr, ymax = upr),
                   size = 1.5,
                   position = position_dodge(width = 0.75)) +
+  geom_text(data = p, 
+            aes(x = nh_fac, y = -0.03, label = n_sp, shape = to_int_def),
+            size = 3,
+            position = position_dodge(width = 0.75)) +
   scale_size_continuous(trans = "log10") +
+  scale_x_discrete(labels = c("First", "Second", "Third")) +
   theme(panel.grid.major.x = element_blank(),
         legend.position = "bottom") +
   labs(x = "Host in cycle exposed", y = "Recovery rate",
@@ -2278,7 +2523,7 @@ p <- cbind(dx, p)
 p <- filter(p, pred == 'yes')
 ```
 ```{r}
-f3 <- ggplot(datx,
+f3 <- ggplot(filter(dx, is.na(pred)),
        aes(y = Recovery_Rate, x = exp(log_ws), color = nh_fac )) +
   geom_point(
     # aes(size = (n_hosts)),
@@ -2287,8 +2532,8 @@ f3 <- ggplot(datx,
   geom_line(data = p, aes(x = exp(log_ws), y = fit), size = 1.5) +
   geom_ribbon(data = p, aes(ymin = lwr, ymax = upr, fill = nh_fac), alpha = 0.2, color = NA) +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) + 
-  scale_color_brewer(palette = "Dark2", direction = -1) + 
-  scale_fill_brewer(palette = "Dark2", direction = -1) + 
+  scale_color_brewer(palette = "Dark2", direction = -1, labels = c("First", "Second", "Third")) + 
+  scale_fill_brewer(palette = "Dark2", direction = -1, labels = c("First", "Second", "Third")) + 
   scale_size_continuous(trans = "log10") + 
   guides(color = F, 
          linetype = F,
@@ -2303,6 +2548,19 @@ f3 <- ggplot(datx,
 f3
 ggsave(f3, filename = "../../figs/fig3.png", width = 6, height = 4)
 ggsave(f3, filename = "../../figs/fig3.svg", width = 6, height = 4)
+```
+Here are the number of species in each group in the plot above. They differ slightly from those in figure 2, because a few species with facultative life cycles can infect different kinds of hosts at the same life stage (e.g. the first host for Toxocara can be an intermediate or definitive host).
+
+```{r}
+dx%>%
+  filter(is.na(pred))%>%
+  group_by(nh_fac)%>%
+  summarize(n_sp = n_distinct(Species))%>%
+  left_join(., dx%>%
+              filter(is.na(pred))%>%
+              group_by(nh_fac)%>%
+              summarize(n_fams = n_distinct(parasite_family))
+              )
 ```
 
 It certainly looks like this pattern is consistent across the wide span of larval sizes. But some of the trend could be driven by detection bias. For example, small worms are harder to find and count. Thus, let's check if recovery still increases with worm size when we restrict the data to the largest third of worm stages.
@@ -2703,7 +2961,7 @@ p <- filter(p, pred == 'yes')%>%
   arrange(nh_fac, log_hm)
 ```
 ```{r}
-f4 <- ggplot(datx,
+f4 <- ggplot(filter(dx, is.na(pred)),
        aes(y = Recovery_Rate, x = exp(log_hm), color = nh_fac )) +
   geom_point(
     # aes(size = n_hosts),
@@ -2712,8 +2970,8 @@ f4 <- ggplot(datx,
   geom_line(data = p, aes(x = exp(log_hm), y = fit), size = 1.5) +
   geom_ribbon(data = p, aes(ymin = lwr, ymax = upr, fill = nh_fac), alpha = 0.2, color = NA) +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) + 
-  scale_color_brewer(palette = "Dark2", direction = -1) + 
-  scale_fill_brewer(palette = "Dark2", direction = -1) + 
+  scale_color_brewer(palette = "Dark2", direction = -1, labels = c("First", "Second", "Third")) + 
+  scale_fill_brewer(palette = "Dark2", direction = -1, labels = c("First", "Second", "Third")) + 
   scale_size_continuous(trans = "log10") + 
   guides(color = F, 
          linetype = F,
@@ -2729,6 +2987,24 @@ f4
 ggsave(f4, filename = "../../figs/fig4.png", width = 6, height = 4)
 ggsave(f4, filename = "../../figs/fig4.svg", width = 6, height = 4)
 ```
+It looks like the slope is most negative for first hosts and then increases with life cycle progression. Let's check the parameter estimates. Here is the estimated "first host" slope:
+
+```{r}
+summary(modp4.1p2$Sol[,"log_hm"])
+```
+"Second host" slope:
+
+```{r}
+summary(modp4.1p2$Sol[,"log_hm"] + modp4.1p2$Sol[,"nh_fac2:log_hm"])
+```
+And "third host" slope:
+
+```{r}
+summary(modp4.1p2$Sol[,"log_hm"] + modp4.1p2$Sol[,"nh_fac3:log_hm"])
+```
+
+The first host slope is significantly negative, but the second and third host slopes are not significantly different from zero (or the first host slope).
+
 Finally, we can check whether worm size and host size interact. In other words, is being big relatively more important when the next host is big (or small)?
 
 ```{r}
@@ -2802,6 +3078,25 @@ The model is worse, judged by DIC.
 
 ```{r}
 cat("delta DIC, after adding host mass x worm size interaction to model with worm size and host mass:", round(modp4.2$DIC - modp4.4$DIC, 2), "(higher is better)")
+```
+
+We can also compare the worm and host size parameters in a model with just those two terms.
+
+```{r}
+modp4.5 <- MCMCglmm(cbind(succeeded, failed) ~ log_dpi + log_ws + log_hm, 
+                 random = ~ us(1+log_dpi):study_rs,
+                 prior = priorRS,
+                 start = startc,
+                 nitt = nit, thin = 20, burnin = bi,
+                 data = filter(datx, !is.na(log_ws), !is.na(log_hm)),
+                 family = 'multinomial2', pr=F, 
+                 verbose = F)
+```
+
+Worm size has twice as large an effect. 
+
+```{r}
+summary(modp4.5)
 ```
 
 In sum, establishment decreases with host mass, though this varies with life stage.
