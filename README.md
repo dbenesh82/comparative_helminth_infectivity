@@ -20,6 +20,8 @@ Increased recovery at later life stages appeared to be drive by larval worm size
 
 ![](figs/fig3.png)
 
+We also explored taxonomic bias in our data (see [here](analyses/4_quantifying_taxbias_for_reviewers/explore_biases_fam_lev.md)) and tested whether certain worm families have a disproportionate impact on the results (see [here](analyses/4_quantifying_taxbias_for_reviewers/leave_one_out.md)).
+
 # Conclusions
 
 Helminths have a better chance of establishing infection at each successive life stage. This increase seems to be driven by growth, with larger parasites having higher establishment rates. Thus, growing in the small and short-lived hosts at the start of a complex life cycle, though dangerous, may substantially improve parasites’ chances of completing their life cycle.

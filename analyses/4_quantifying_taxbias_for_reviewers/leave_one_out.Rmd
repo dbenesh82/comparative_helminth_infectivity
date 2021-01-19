@@ -1,0 +1,277 @@
+---
+title: "Leave one out"
+output: 
+  html_document:
+    keep_md: true
+    toc: true
+    df_print: kable
+---
+
+There are taxonomic biases in the recovery rate data (see [here](explore_biases_fam_lev.md)). One might therefore wonder whether our conclusions are dependent on particular taxa. To assess this, we take a "leave-one-out" approach. That is, we loop through our data, leaving out one species at a time.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(MCMCglmm)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+```{r}
+dat <- read.csv(file = "../../data/er_combined.csv", header = T)
+tree <- read.tree(file = "../../data/full_tree_time_calib.nex")
+```
+```{r}
+# for matching tree tips and species name in data frame
+tips <- read.csv(file = "../../data/data_tree_tips_table.csv")
+tips$Parasite.species[which(tips$Parasite.species == "Mesocestoides corti/variabilis/vogae")] <- "Mesocestoides corti"
+tips$Parasite.species[which(tips$Parasite.species == "Dioctophyma renale")] <- "Dioctophyme renale"
+tips$Parasite.species[which(tips$Parasite.species == "Macracanthorhynchus hirudinaceous")] <- "Macracanthorhynchus hirudinaceus"
+tips$Parasite.species[which(tips$Parasite.species == "Mesocestoides lineatus/litteratus")] <- "Mesocestoides lineatus"
+tips$Parasite.species[which(tips$Parasite.species == "Anisakis pegreffii")] <- "Anisakis pegreffi" 
+tips$Parasite.species[which(tips$Parasite.species == "Obeliscoides cuniculi multistriatus")] <- "Obeliscoides cuniculi" 
+tips$Parasite.species[which(tips$Parasite.species == "Rodentolepis microstoma")] <- "Hymenolepis microstoma" 
+dat <- left_join(dat, tips%>%distinct(), by = c("Species" = "Parasite.species"))
+```
+```{r}
+tree <- keep.tip(tree, tip = unique(dat$tree_tips)%>%na.omit)
+```
+```{r}
+dat <- mutate(dat, succeeded = round(Recovered,0))%>%
+  mutate(failed = round(Dose,0) - succeeded, 
+         time_dpix = Time_Dissection-1) # time of dissection minus 1 puts origin at 1 dpi - reasonable for comparison (shortly after infection)
+dat <- dat%>%
+  mutate(tot_given = round(Sample_Size * Dose,0), tot_inf = round(Sample_Size * Dose * Recovery_Rate, 0))%>%
+  mutate(succeeded = tot_inf, failed = tot_given - tot_inf)
+
+dat <- mutate(dat, obs = 1:length(Species))
+dat <- mutate(dat, log_dose = log(Dose), log_dose1 = log(Dose+1), 
+              log_recover = log(Recovered), log_recover1 = log(Recovered+1),
+              log_failed = log(Dose - Recovered), dose_rounded = round(Dose,0))
+dat <- mutate(dat, nh_fac = factor(Next_Host),
+              to_int_def = fct_recode(to_int_def, Intermediate = "int", Definitive = "def"))%>%
+  mutate(to_int_def = fct_relevel(to_int_def, c("Intermediate", "Definitive")))
+
+dat <- dat%>%
+  mutate(st_id = factor(paste(nh_fac, to_int_def)))%>%
+  mutate(st_id = factor(st_id, levels = c("1 Intermediate", "1 Definitive",
+                                          "2 Intermediate", "2 Definitive",
+                                          "3 Intermediate", "3 Definitive")))
+
+dat <- mutate(dat, study_rs = factor(paste0(Study,":",nh_fac)),
+              log_dpi = log(Time_Dissection))
+# sort(unique(dat$study_rs))
+
+dat <- mutate(dat, log_ws = log(biovolume), log_hm = log(host_bm))%>%
+  mutate(log_ws_cen = log_ws - mean(log_ws, na.rm = T),
+         log_hm_cen = log_hm - mean(log_hm, na.rm = T))%>%
+  mutate(log_dpi_cen = log_dpi - log(14), # center time of dissection at 2 weeks pi
+         log_dose_cen = log_dose - log(100) # center dose at 100
+         )
+```
+```{r}
+## Should analysis be at level within study?
+datx <- dat%>%
+  group_by(Species, Study, nh_fac, to_int_def, log_dpi, Dose, Host_Species, Stage, tree_tips)%>%
+  summarise(n_hosts = sum(Sample_Size),
+            tot_given = sum(tot_given),
+            tot_inf = sum(tot_inf),
+            log_ws = mean(log_ws),
+            log_hm = mean(log_hm),
+            log_dose = mean(log_dose))%>%
+  ungroup()%>%
+  mutate(succeeded = tot_inf, failed = tot_given - tot_inf,
+         Recovery_Rate = tot_inf/tot_given)
+datx <- datx%>%
+  mutate(st_id = factor(paste(nh_fac, to_int_def)))%>%
+  mutate(st_id = factor(st_id, levels = c("1 Intermediate", "1 Definitive",
+                                          "2 Intermediate", "2 Definitive",
+                                          "3 Intermediate", "3 Definitive")))
+
+datx <- mutate(datx, study_rs = factor(paste0(Study,":",nh_fac)))
+datx <- mutate(datx, obs = 1:length(Species))%>%
+  mutate(log_dpi_cen = log_dpi - mean(unique(datx$log_dpi), na.rm=T),
+         log_ws_cen = log_ws - mean(unique(datx$log_ws), na.rm=T),
+         log_hm_cen = log_hm - mean(unique(datx$log_hm), na.rm=T),
+         log_dose_cen = log_dose - log(100))%>%
+  mutate(spst = paste(Species, nh_fac))
+
+datx<-left_join(datx, 
+                select(dat, Species, parasite_genus, parasite_family,
+                       parasite_order, parasite_class, parasite_phylum)%>%distinct())
+```
+
+We loop through the unique species (not stages) in the data, so excluding some species might have a bigger impact than others, because they represent multiple stages. At each iteration, we remove one species, fit a mixed model, and extract the parameters and p-values. The model includes random slopes for study and just the fixed, main effects of time post infection, host number, worm size, and host mass.
+
+```{r}
+spp_in_dat <- unique(datx$Species)
+fam_in_dat <- unique(datx$parasite_family)
+```
+
+```{r}
+library(lme4)
+```
+```{r}
+# base model
+m0 <- glmer(cbind(succeeded, failed) ~ log_dpi + nh_fac + log_ws + log_hm + 
+              (1 + log_dpi|study_rs) + (1|obs),
+                  data = filter(datx, !is.na(log_ws), !is.na(log_hm)),
+                  family = "binomial")
+# summary(m0)
+```
+```{r}
+# output from full model
+s0 <- summary(m0)
+n_tot <- s0$ngrps["obs"]
+df0 <- data.frame(param_nam = row.names(s0$coefficients),
+                  param_est = s0$coefficients[,1],
+                  pval = s0$coefficients[,4],
+                  leave_out = "none",
+                  removed = n_tot-n_tot)
+row.names(df0) <- NULL
+
+# fit model to each spp
+for(sp in spp_in_dat){
+  #
+  mx <- update(m0, data = filter(datx, Species != sp, !is.na(log_ws), !is.na(log_hm)))
+  
+  sx <- summary(mx)
+  dfx <- data.frame(param_nam = row.names(sx$coefficients),
+                    param_est = sx$coefficients[,1],
+                    pval = sx$coefficients[,4],
+                    leave_out = sp,
+                    removed = n_tot - sx$ngrps["obs"])
+  row.names(dfx) <- NULL
+  
+  df0 <- bind_rows(df0, dfx)
+}
+```
+```{r}
+df_sp <- df0
+df_sp$tax_level <- "species"
+# df_sp <- mutate(df_sp,
+#              param_nam = factor(param_nam, labels = c("first intermediate host\n(intercept)",
+#                              "days post infection", 
+#                              "contrast host 2", "contrast host 3 ", "int vs def",
+#                             "worm size", "host mass", 
+#                             "contrast host 2\nint vs def", "contrast host 3\nint vs def")))
+```
+
+Here is the distibution of the parameter estimates when we "leave one species out". The significance of the parameters did not change in any cases. Parameter magnitude was also rather consistent, though the host mass and worm size parameters seem much higher when we left one species out.
+
+```{r}
+ggplot(filter(df_sp, leave_out != "none"),
+       aes(x = param_nam, y = param_est)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(aes(size = removed, color = pval < 0.01),
+              alpha = 0.5) +
+  geom_point(data = filter(df_sp, leave_out == "none"),
+             size = 5) +
+  facet_wrap(~param_nam, scales = "free")
+```
+Here are the species that cause the biggest changes in parameter estimates. The host mass effect is weaker (less negative) when Toxascaris leonina is removed. This makes sense because its infectivity was higher in rodents than carnivores (cats and dogs) at the same life stage. The worm size effect is stronger when Taenia hydatigena is removed. This worm also makes sense, because the larvae are quite big, but much of the cysts are fluid filled, so the actual infecting larva is smaller, perhaps resulting in low infectivity.
+
+```{r}
+df_sp%>%
+  filter(param_nam == "log_hm" | param_nam == "log_ws")%>%
+  group_by(param_nam)%>%
+  filter(param_est == max(param_est))
+```
+
+Are these patterns the same if we exclude higher taxonomic grouping from the data? Some higher taxa (families) are [overrepresented in the data](explore_biases_fam_lev.md), so instead of species, let's now leave one family out at a time.
+
+```{r}
+# output from full model
+s0 <- summary(m0)
+n_tot <- s0$ngrps["obs"]
+df0 <- data.frame(param_nam = row.names(s0$coefficients),
+                  param_est = s0$coefficients[,1],
+                  pval = s0$coefficients[,4],
+                  leave_out = "none",
+                  removed = n_tot-n_tot)
+row.names(df0) <- NULL
+
+# fit model to each spp
+for(fam in fam_in_dat){
+  #
+  mx <- update(m0, data = filter(datx, parasite_family != fam, !is.na(log_ws), !is.na(log_hm)))
+  
+  sx <- summary(mx)
+  dfx <- data.frame(param_nam = row.names(sx$coefficients),
+                    param_est = sx$coefficients[,1],
+                    pval = sx$coefficients[,4],
+                    leave_out = fam,
+                    removed = n_tot - sx$ngrps["obs"])
+  row.names(dfx) <- NULL
+  
+  df0 <- bind_rows(df0, dfx)
+
+}
+```
+```{r}
+# combine iterations at species and family level
+df0$tax_level <- "family"
+df <- bind_rows(df_sp, df0)
+# df <- mutate(df,
+#              param_nam = factor(param_nam, labels = c("first intermediate host\n(intercept)",
+#                              "days post infection", 
+#                              "contrast host 2", "contrast host 3 ", "int vs def",
+#                             "worm size", "host mass", 
+#                             "contrast host 2\nint vs def", "contrast host 3\nint vs def")))
+```
+```{r}
+df <- mutate(df,
+             param_nam = factor(param_nam, labels = c("host 1\n(intercept)",
+                                                      "days post infection", "host mass", "worm size",          
+                                                      "host 1 vs 2", "host 1 vs 3"))
+             )%>%
+  mutate(param_nam = fct_relevel(param_nam, c("host 1\n(intercept)", "host 1 vs 2", "host 1 vs 3",
+                                              "days post infection", "host mass", "worm size")
+                                 ))
+```
+
+Again the parameter estimates do not change signs when we exclude a family.
+
+```{r}
+s3 <- ggplot(filter(df, tax_level == "family", leave_out != "none"),
+       aes(x = param_nam, y = param_est)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(aes(size = removed, color = pval < 0.05),
+              alpha = 0.5) +
+  geom_point(data = filter(df, tax_level == "family", leave_out == "none"),
+             size = 5) +
+  facet_wrap(~param_nam, scales = "free") +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.text.x = element_blank()) +
+  labs(x = NULL, y = "Parameter estimate", color = "P < 0.05", size = "Recovery rates\nremoved") 
+s3
+# ggsave(s3, filename = "../../figs/figS3.png", width = 7, height = 5)
+```
+
+Also, the families that most impact worm size and host size parameters remain the same.
+
+```{r}
+df0%>%
+  filter(param_nam == "log_hm" | param_nam == "log_ws")%>%
+  group_by(param_nam)%>%
+  filter(param_est == max(param_est))
+```
+
+
+We can join together the output from either leaving species and families out of the data. The trends are quite comparable.
+
+```{r}
+ggplot(filter(df, leave_out != "none"),
+       aes(x = tax_level, y = param_est)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(aes(size = removed, color = pval < 0.05),
+              alpha = 0.5) +
+  geom_point(data = filter(df, leave_out == "none"),
+             size = 5) +
+  facet_wrap(~param_nam, scales = "free")
+```
+
+```{r}
+save.image(file = "loo_output.RData")
+```
+

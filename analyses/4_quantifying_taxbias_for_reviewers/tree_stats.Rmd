@@ -1,0 +1,87 @@
+---
+title: "Paste together supercrunch trees"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ape)
+library(ggtree)
+library(RColorBrewer)
+library(phytools)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+```{r importdata}
+dat <- read.csv(file = "../../data/er_combined.csv", header = TRUE)
+```
+```{r}
+species <- mutate(dat, binomial = gsub(pattern = " ", replacement = "_", Species))%>%
+  select(Species, parasite_genus, binomial)%>%
+  distinct()
+
+# problematic names
+species$binomial[which(species$binomial == "Protostrongylus_stilesi/rushi")] <- "Protostrongylus_stilesi" # this species has sequences avail and is in 'mega tree'
+species$binomial[which(species$binomial == "Protostrongylus_pulmonalis/kamenskyi")] <- "Protostrongylus_pulmonalis" # this species has sequences avail and is in 'mega tree'
+species$binomial[which(species$binomial == "Dioctophyma_renale")] <- "Dioctophyme_renale" # misspelled name in data
+species$binomial[which(species$binomial == "Acanthogyrus_(Acanthosentis)_lizae")] <- "Acanthogyrus_adriaticus" # synonym
+species$binomial[which(species$binomial == "Callotetrarhynchus_nipponica")] <- "Callitetrarhynchus_gracilis" # synonym
+species$binomial[which(species$binomial == "Pediobothrium_sp.")] <- "Pedibothrium_sp." # misspelled name in data
+species$binomial[which(species$binomial == "Amplicaecum_robertsi")] <- "Ophidascaris_robertsi" # synonym
+species$binomial[which(species$binomial == "Contracaecum_osculatum_[A-C]")] <- "Contracaecum_osculatum_A-C" # remove problem characters
+species$binomial[which(species$binomial == "Contracaecum_osculatum_[D,_E]")] <- "Contracaecum_osculatum_D-E" # remove problem characters
+species$binomial[which(species$binomial == "Metaleptus_rabuka")] <- "Mooleptus_rabuka" # synonym
+species$binomial[which(species$binomial == "Pseudoterranova_decipiens_[A-D]")] <- "Pseudoterranova_decipiens" # remove problem characters
+species$binomial[which(species$binomial == "Taenia_taeniaeformis")] <- "Hydatigera_taeniaeformis" # synonym
+species$binomial[which(species$binomial == "Taenia_krepkogorski")] <- "Hydatigera_krepkogorski" # synonym
+species$binomial[which(species$binomial == "Taenia_mustelae")] <- "Versteria_mustelae" # synonym
+species$binomial[which(species$binomial == "Taenia_ovis/krabbei")] <- "Taenia_ovis" # this species has sequences avail and is in 'mega tree'
+species$binomial[which(species$binomial == "Mesocestoides_corti/variabilis/vogae")] <- "Mesocestoides_corti" # this species has sequences avail and is in 'mega tree'
+species$binomial[which(species$binomial == "Mesocestoides_lineatus/litteratus")] <- "Mesocestoides_lineatus" # this species has sequences avail and is in 'mega tree'
+```
+
+
+```{r}
+acanth_tree <- read.tree(file = "../../data/acanth.nex")
+cest_tree <- read.tree(file = "../../data/cest.nex")
+nem_tree <- read.tree(file = "../../data/nem_phylo_1700spp.nex") # need to re-run to get boot strap support
+sp_in_tree <- c(acanth_tree$tip.label, cest_tree$tip.label, nem_tree$tip.label)
+```
+
+Number of acanths:
+
+```{r}
+length(acanth_tree$tip.label)
+```
+Number of cestodes:
+
+```{r}
+length(cest_tree$tip.label)
+```
+Number of nematodes:
+```{r}
+length(nem_tree$tip.label)
+```
+
+How many species do I need to add to tree?
+
+```{r}
+spp_not_in_tree <- species$binomial[!(species$binomial %in% sp_in_tree)]
+length(spp_not_in_tree)
+```
+
+What percent of species in recovery data are in tree?
+
+```{r}
+1-(length(spp_not_in_tree)/length(species$binomial))
+```
+
+What percent of species in recovery data have at least their genus in tree?
+
+```{r}
+gen_in_tree <- substr(sp_in_tree,1,stop = regexpr("_", sp_in_tree)-1)
+gen_in_tree <- unique(gen_in_tree)
+rec_gen_in_tree <- species$parasite_genus[(species$parasite_genus %in% gen_in_tree)]
+length(rec_gen_in_tree)/length(species$binomial)
+```
