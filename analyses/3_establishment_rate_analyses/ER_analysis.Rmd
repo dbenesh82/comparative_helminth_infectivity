@@ -322,7 +322,7 @@ The data were often collected at the level of individual hosts. For example, a s
 
 However, some studies had a single condition, such as 100 hosts each receiving 2 worm larva. The results of such an experiment may be reported as a mean abundance (i.e. worms per exposed host). From such results, we know the number of parasites given and the number recovered, but not their distribution among hosts. Such results are at the study level.
 
-Logisitc regression accounts for the number of trials (worms given) and the number of successes (worms recovered), so it should not matter that dataset is a mix of results at the host level and the study level - the trials do not change. Nonetheless, let's compare models fit at either level. We convert the dataframe to the 'condition' level. Any infections within a study using e.g. different host species, doses, or dissection times are kept separate, whereas any infection under the same conditions are pooled.
+Logistic regression accounts for the number of trials (worms given) and the number of successes (worms recovered), so it should not matter that dataset is a mix of results at the host level and the study level - the trials do not change. Nonetheless, let's compare models fit at either level. We convert the dataframe to the 'condition' level. Any infections within a study using e.g. different host species, doses, or dissection times are kept separate, whereas any infection under the same conditions are pooled.
 
 ```{r}
 ## Should analysis be at level within study?
@@ -518,7 +518,6 @@ datx%>%
 
 rm(ht, host_tax)
 ```
-
 
 ## Weights
 
@@ -4189,5 +4188,34 @@ Thus, experimenters usually use higher doses in situations where lower infection
 
 ```{r}
 save.image(file = "ER_analysis_aftermod.RData")
+```
+
+```{r}
+# write nice data files for dryad
+datx_out <- datx%>%
+  mutate(dpi = exp(log_dpi))%>%
+  select(parasite_species = Species, parasite_genus, parasite_family, parasite_order, parasite_class,
+         parasite_phylum, host_species = Host_Species, host_genus, host_class,
+         host_in_cycle_exposed = nh_fac, to_int_def, 
+         dpi, dose = Dose, sample_size = n_hosts, 
+         tot_given, tot_recovered = tot_inf, recovery_rate = Recovery_Rate,
+         log_ws, log_hm, study = Study)
+         
+write.csv(datx_out, file = "../../data/recovery_rates_condition_level.csv", row.names = F)
+
+dat_out <- dat%>%
+  mutate(likely_undercount = if_else(Detect_Problem, "yes", "no"))%>%
+  select(parasite_species = Species, parasite_genus, parasite_family, parasite_order, parasite_class,
+         parasite_phylum, host_species = Host_Species, host_genus, 
+         host_in_cycle_exposed = nh_fac, to_int_def, 
+         exposure_type = Exposure_Type,
+         likely_undercount, 
+         dpi = Time_Dissection, dose = Dose, sample_size = Sample_Size, 
+         tot_given, tot_recovered = tot_inf, recovery_rate = Recovery_Rate,
+         worm_length = avg_length, worm_width = avg_width, 
+         worm_volume = biovolume, imputed_worm_volume = imp_biovolume, log_ws,
+         host_bm, log_hm, study = Study)
+
+write.csv(dat_out, file = "../../data/recovery_rates_infection_level.csv", row.names = F)
 ```
 

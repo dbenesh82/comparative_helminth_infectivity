@@ -775,6 +775,17 @@ rm(pred_study_effort, dx_se, dx_hab, dx_dh)
 ```
 
 ```{r}
+# write nice file for dryad
+dx_out <- dx%>%
+  filter(pred == "no")%>%
+  select(parasite_group = Parasite.group, parasite_class, parasite_order, parasite_family, 
+         habitat, host_type_dh, study_effort = pubmed_hits_gensum, 
+         n_spp_ott = n_spp_ot, n_spp_dataset = n_spp, dataset = db
+         )
+write.csv(dx_out, file = "../../data/taxonomic_representation.csv", row.names = F)
+```
+
+```{r}
 # fit mcmc models
 prior <- list(R = list(V = 0.1, fix = 1),
               G = list(G1 = list(V = diag(2), nu = 2))

@@ -28,4 +28,4 @@ Helminths have a better chance of establishing infection at each successive life
 
 # Reference
 
-Add when appropriate...
+Froelick, S., Gramolini, L., and Benesh, D.P. 2021. Comparative analysis of helminth infectivity: growth in intermediate hosts increases establishment rates in the next host. Proceedings B. In press.
